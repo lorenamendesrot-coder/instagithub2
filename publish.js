@@ -64,7 +64,7 @@ async function publishOne({ account, media_url, media_type, post_type, caption }
   }
 }
 
-export const handler = async (event) => {
+exports.handler = async (event) => {
   const headers = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type",
