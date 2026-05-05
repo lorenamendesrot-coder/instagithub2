@@ -39,10 +39,10 @@ export const useHistory = () => {
 };
 
 const NAV = [
-  { to: "/",         label: "Contas",       icon: "○" },
-  { to: "/novo",     label: "Novo post",    icon: "+" },
-  { to: "/agendar",  label: "Agendamentos", icon: "◷" },
-  { to: "/historico",label: "Histórico",    icon: "≡" },
+  { to: "/",          label: "Contas",       icon: "⊙", desc: "Gerenciar contas" },
+  { to: "/novo",      label: "Publicar",     icon: "↑", desc: "Publicar agora" },
+  { to: "/agendar",   label: "Agendar",      icon: "◷", desc: "Fila de posts" },
+  { to: "/historico", label: "Histórico",    icon: "≡", desc: "Posts anteriores" },
 ];
 
 export default function App() {
@@ -72,56 +72,101 @@ export default function App() {
 
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
-      <aside style={{ width: 220, background: "var(--bg2)", borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", padding: "20px 0", flexShrink: 0, position: "sticky", top: 0, height: "100vh" }}>
-        <div style={{ padding: "0 18px 20px", borderBottom: "1px solid var(--border)", marginBottom: 8 }}>
-          <div style={{ fontWeight: 600, fontSize: 15, letterSpacing: "-0.01em" }}>Insta Manager</div>
-          <div style={{ color: "var(--muted)", fontSize: 11, marginTop: 2 }}>Meta Graph API</div>
+      {/* ── Sidebar ── */}
+      <aside style={{
+        width: 230, background: "var(--bg2)",
+        borderRight: "1px solid var(--border)",
+        display: "flex", flexDirection: "column",
+        flexShrink: 0, position: "sticky", top: 0, height: "100vh",
+        overflow: "hidden",
+      }}>
+        {/* Logo */}
+        <div style={{ padding: "20px 18px 16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{
+              width: 32, height: 32, borderRadius: 9,
+              background: "linear-gradient(135deg, #7c5cfc, #a78bfa)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 16, fontWeight: 700, color: "#fff", flexShrink: 0,
+            }}>IG</div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14, letterSpacing: "-0.02em" }}>Insta Manager</div>
+              <div style={{ color: "var(--muted)", fontSize: 10, marginTop: 1 }}>Meta Graph API</div>
+            </div>
+          </div>
         </div>
 
+        <div style={{ height: "1px", background: "var(--border)", margin: "0 14px" }} />
+
+        {/* Contas resumo */}
         {accounts.length > 0 && (
-          <div style={{ padding: "8px 14px 10px", borderBottom: "1px solid var(--border)", marginBottom: 8 }}>
-            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6, fontWeight: 500, letterSpacing: "0.03em" }}>CONTAS ({accounts.length})</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 160, overflowY: "auto" }}>
+          <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
+            <div style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8, textTransform: "uppercase" }}>
+              Contas ativas ({accounts.length})
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 120, overflowY: "auto" }}>
               {accounts.map((acc) => (
                 <div key={acc.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {acc.profile_picture
-                    ? <img src={acc.profile_picture} alt="" style={{ width: 22, height: 22, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
-                    : <div style={{ width: 22, height: 22, borderRadius: "50%", background: "var(--bg3)", flexShrink: 0 }} />}
-                  <span style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>@{acc.username}</span>
+                    ? <img src={acc.profile_picture} alt="" style={{ width: 22, height: 22, borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "1.5px solid var(--border2)" }} />
+                    : <div style={{ width: 22, height: 22, borderRadius: "50%", background: "linear-gradient(135deg,#7c5cfc,#a78bfa)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "#fff", fontWeight: 700 }}>
+                        {acc.username?.[0]?.toUpperCase() || "?"}
+                      </div>}
+                  <span style={{ fontSize: 12, color: "var(--text2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    @{acc.username}
+                  </span>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        <nav style={{ padding: "8px 10px", flex: 1 }}>
+        {/* Nav */}
+        <nav style={{ padding: "10px 10px", flex: 1 }}>
           {NAV.map((item) => (
             <NavLink key={item.to} to={item.to} end={item.to === "/"}
               style={({ isActive }) => ({
-                display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 8, marginBottom: 2,
-                color: isActive ? "var(--accent-light)" : "var(--muted)", background: isActive ? "#7c5cfc18" : "transparent",
-                fontWeight: isActive ? 500 : 400, fontSize: 14, transition: "all 0.12s",
-              })}>
-              <span style={{ fontSize: 15, lineHeight: 1 }}>{item.icon}</span>{item.label}
+                display: "flex", alignItems: "center", gap: 10,
+                padding: "9px 12px", borderRadius: 9, marginBottom: 2,
+                color: isActive ? "var(--accent-light)" : "var(--muted)",
+                background: isActive ? "var(--accent-glow)" : "transparent",
+                fontWeight: isActive ? 600 : 400, fontSize: 13,
+                transition: "all 0.12s",
+                borderLeft: isActive ? "2px solid var(--accent)" : "2px solid transparent",
+              })}
+            >
+              <span style={{ fontSize: 15, lineHeight: 1, width: 18, textAlign: "center" }}>{item.icon}</span>
+              {item.label}
             </NavLink>
           ))}
         </nav>
 
-        <div style={{ padding: "12px 10px 0", borderTop: "1px solid var(--border)" }}>
-          <a href={oauthUrl} className="btn btn-primary" style={{ width: "100%", fontSize: 13 }}>+ Conectar conta</a>
+        {/* Conectar */}
+        <div style={{ padding: "12px 12px 20px", borderTop: "1px solid var(--border)" }}>
+          <a href={oauthUrl} className="btn btn-primary" style={{ width: "100%", fontSize: 13, borderRadius: 9 }}>
+            <span style={{ fontSize: 16 }}>+</span> Conectar conta
+          </a>
         </div>
       </aside>
 
-      <main style={{ flex: 1, overflow: "auto", minWidth: 0 }}>
+      {/* ── Main ── */}
+      <main style={{ flex: 1, overflow: "auto", minWidth: 0, background: "var(--bg)" }}>
         {toast && (
-          <div style={{ margin: "16px 32px 0", padding: "11px 16px", borderRadius: 10, fontSize: 13, background: toast.type === "success" ? "#05422e" : "#3b0d0d", color: toast.type === "success" ? "var(--success)" : "var(--danger)", border: `1px solid ${toast.type === "success" ? "#34d39940" : "#f8717140"}` }}>
+          <div style={{
+            margin: "16px 28px 0", padding: "12px 16px", borderRadius: 10, fontSize: 13,
+            background: toast.type === "success" ? "var(--success-bg)" : "var(--danger-bg)",
+            color: toast.type === "success" ? "var(--success)" : "var(--danger)",
+            border: `1px solid ${toast.type === "success" ? "rgba(52,211,153,0.25)" : "rgba(248,113,113,0.25)"}`,
+            display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <span>{toast.type === "success" ? "✓" : "✕"}</span>
             {toast.msg}
           </div>
         )}
         <Routes>
-          <Route path="/"         element={<Accounts />} />
-          <Route path="/novo"     element={<NewPost />} />
-          <Route path="/agendar"  element={<Schedule />} />
+          <Route path="/"          element={<Accounts />} />
+          <Route path="/novo"      element={<NewPost />} />
+          <Route path="/agendar"   element={<Schedule />} />
           <Route path="/historico" element={<History />} />
         </Routes>
       </main>
