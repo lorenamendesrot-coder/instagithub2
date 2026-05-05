@@ -29,7 +29,6 @@ export const handler = async (event) => {
     const pagesRes = await fetch(`${GRAPH}/me/accounts?access_token=${userToken}`);
     const pagesData = await pagesRes.json();
     const pages = pagesData.data || [];
-    const pages = pagesData.data || [];
     console.log("paginas encontradas:", pages.length);
     console.log("pagesData:", JSON.stringify(pagesData));
     const accounts = [];
