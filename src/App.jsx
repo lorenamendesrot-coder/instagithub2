@@ -1,15 +1,20 @@
 import { Routes, Route, NavLink } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Accounts from "./pages/Accounts.jsx";
 import NewPost from "./pages/NewPost.jsx";
 import Schedule from "./pages/Schedule.jsx";
 import History from "./pages/History.jsx";
+import { dbGetAll, dbPut, dbPutMany, dbDelete, dbClear } from "./useDB.js";
 
+// ─── Accounts (ainda usa localStorage — não precisa de IDB) ─────────────────
 export const useAccounts = () => {
   const [accounts, setAccounts] = useState(() => {
     try { return JSON.parse(localStorage.getItem("ig_accounts") || "[]"); } catch { return []; }
   });
-  const saveAccounts = (list) => { localStorage.setItem("ig_accounts", JSON.stringify(list)); setAccounts(list); };
+  const saveAccounts = (list) => {
+    localStorage.setItem("ig_accounts", JSON.stringify(list));
+    setAccounts(list);
+  };
   const addAccounts = (newAccs) => {
     const existing = JSON.parse(localStorage.getItem("ig_accounts") || "[]");
     const merged = [...existing];
@@ -24,30 +29,63 @@ export const useAccounts = () => {
   return { accounts, addAccounts, removeAccount, setAccounts: saveAccounts };
 };
 
+// ─── History — IndexedDB ────────────────────────────────────────────────────
 export const useHistory = () => {
-  const [history, setHistory] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("ig_history") || "[]"); } catch { return []; }
-  });
-  const addEntry = (entry) => {
-    const prev = JSON.parse(localStorage.getItem("ig_history") || "[]");
-    const updated = [entry, ...prev].slice(0, 200);
-    localStorage.setItem("ig_history", JSON.stringify(updated));
-    setHistory(updated);
+  const [history, setHistory] = useState([]);
+
+  const reload = useCallback(async () => {
+    const all = await dbGetAll("history");
+    all.sort((a, b) => b.id - a.id);
+    setHistory(all.slice(0, 200));
+  }, []);
+
+  useEffect(() => { reload(); }, []);
+
+  const addEntry = async (entry) => {
+    await dbPut("history", entry);
+    reload();
   };
-  const clearHistory = () => { localStorage.removeItem("ig_history"); setHistory([]); };
-  return { history, addEntry, clearHistory };
+
+  const clearHistory = async () => {
+    await dbClear("history");
+    setHistory([]);
+  };
+
+  return { history, addEntry, clearHistory, reloadHistory: reload };
 };
 
+// ─── SW registration ─────────────────────────────────────────────────────────
+function registerSW(setSwStatus) {
+  if (!("serviceWorker" in navigator)) {
+    setSwStatus("unsupported");
+    return;
+  }
+  navigator.serviceWorker
+    .register("/sw.js")
+    .then(() => {
+      setSwStatus("active");
+      navigator.serviceWorker.addEventListener("message", (e) => {
+        if (e.data?.type === "QUEUE_UPDATE") {
+          window.dispatchEvent(new CustomEvent("sw:queue-update"));
+        }
+      });
+    })
+    .catch(() => setSwStatus("error"));
+}
+
 const NAV = [
-  { to: "/",          label: "Contas",       icon: "⊙", desc: "Gerenciar contas" },
-  { to: "/novo",      label: "Publicar",     icon: "↑", desc: "Publicar agora" },
-  { to: "/agendar",   label: "Agendar",      icon: "◷", desc: "Fila de posts" },
-  { to: "/historico", label: "Histórico",    icon: "≡", desc: "Posts anteriores" },
+  { to: "/",          label: "Contas",       icon: "○" },
+  { to: "/novo",      label: "Novo post",    icon: "+" },
+  { to: "/agendar",   label: "Agendamentos", icon: "◷" },
+  { to: "/historico", label: "Histórico",    icon: "≡" },
 ];
 
 export default function App() {
   const { addAccounts, accounts } = useAccounts();
   const [toast, setToast] = useState(null);
+  const [swStatus, setSwStatus] = useState("loading");
+
+  useEffect(() => { registerSW(setSwStatus); }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -70,97 +108,67 @@ export default function App() {
   const SCOPE = "instagram_basic,instagram_content_publish,pages_read_engagement,pages_show_list,business_management";
   const oauthUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${APP_ID}&redirect_uri=${REDIRECT}&scope=${SCOPE}&response_type=code`;
 
+  const swDot = {
+    active:      { color: "var(--success)", title: "Scheduler ativo em background" },
+    error:       { color: "var(--danger)",  title: "Scheduler inativo — erro ao registrar SW" },
+    unsupported: { color: "var(--warning)", title: "Navegador não suporta Service Worker" },
+    loading:     { color: "var(--muted)",   title: "Iniciando scheduler..." },
+  }[swStatus];
+
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
-      {/* ── Sidebar ── */}
-      <aside style={{
-        width: 230, background: "var(--bg2)",
-        borderRight: "1px solid var(--border)",
-        display: "flex", flexDirection: "column",
-        flexShrink: 0, position: "sticky", top: 0, height: "100vh",
-        overflow: "hidden",
-      }}>
-        {/* Logo */}
-        <div style={{ padding: "20px 18px 16px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{
-              width: 32, height: 32, borderRadius: 9,
-              background: "linear-gradient(135deg, #7c5cfc, #a78bfa)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 16, fontWeight: 700, color: "#fff", flexShrink: 0,
-            }}>IG</div>
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 14, letterSpacing: "-0.02em" }}>Insta Manager</div>
-              <div style={{ color: "var(--muted)", fontSize: 10, marginTop: 1 }}>Meta Graph API</div>
-            </div>
+      <aside style={{ width: 220, background: "var(--bg2)", borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", padding: "20px 0", flexShrink: 0, position: "sticky", top: 0, height: "100vh" }}>
+        <div style={{ padding: "0 18px 20px", borderBottom: "1px solid var(--border)", marginBottom: 8 }}>
+          <div style={{ fontWeight: 600, fontSize: 15, letterSpacing: "-0.01em", display: "flex", alignItems: "center", gap: 8 }}>
+            Insta Manager
+            <span title={swDot.title} style={{ fontSize: 8, color: swDot.color, lineHeight: 1 }}>⬤</span>
           </div>
+          <div style={{ color: "var(--muted)", fontSize: 11, marginTop: 2 }}>Meta Graph API</div>
         </div>
 
-        <div style={{ height: "1px", background: "var(--border)", margin: "0 14px" }} />
-
-        {/* Contas resumo */}
         {accounts.length > 0 && (
-          <div style={{ padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
-            <div style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600, letterSpacing: "0.06em", marginBottom: 8, textTransform: "uppercase" }}>
-              Contas ativas ({accounts.length})
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 120, overflowY: "auto" }}>
+          <div style={{ padding: "8px 14px 10px", borderBottom: "1px solid var(--border)", marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6, fontWeight: 500, letterSpacing: "0.03em" }}>CONTAS ({accounts.length})</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 160, overflowY: "auto" }}>
               {accounts.map((acc) => (
                 <div key={acc.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {acc.profile_picture
-                    ? <img src={acc.profile_picture} alt="" style={{ width: 22, height: 22, borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "1.5px solid var(--border2)" }} />
-                    : <div style={{ width: 22, height: 22, borderRadius: "50%", background: "linear-gradient(135deg,#7c5cfc,#a78bfa)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "#fff", fontWeight: 700 }}>
-                        {acc.username?.[0]?.toUpperCase() || "?"}
-                      </div>}
-                  <span style={{ fontSize: 12, color: "var(--text2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    @{acc.username}
-                  </span>
+                    ? <img src={acc.profile_picture} alt="" style={{ width: 22, height: 22, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+                    : <div style={{ width: 22, height: 22, borderRadius: "50%", background: "var(--bg3)", flexShrink: 0 }} />}
+                  <span style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>@{acc.username}</span>
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {/* Nav */}
-        <nav style={{ padding: "10px 10px", flex: 1 }}>
+        <nav style={{ padding: "8px 10px", flex: 1 }}>
           {NAV.map((item) => (
             <NavLink key={item.to} to={item.to} end={item.to === "/"}
               style={({ isActive }) => ({
-                display: "flex", alignItems: "center", gap: 10,
-                padding: "9px 12px", borderRadius: 9, marginBottom: 2,
-                color: isActive ? "var(--accent-light)" : "var(--muted)",
-                background: isActive ? "var(--accent-glow)" : "transparent",
-                fontWeight: isActive ? 600 : 400, fontSize: 13,
-                transition: "all 0.12s",
-                borderLeft: isActive ? "2px solid var(--accent)" : "2px solid transparent",
-              })}
-            >
-              <span style={{ fontSize: 15, lineHeight: 1, width: 18, textAlign: "center" }}>{item.icon}</span>
-              {item.label}
+                display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 8, marginBottom: 2,
+                color: isActive ? "var(--accent-light)" : "var(--muted)", background: isActive ? "#7c5cfc18" : "transparent",
+                fontWeight: isActive ? 500 : 400, fontSize: 14, transition: "all 0.12s",
+              })}>
+              <span style={{ fontSize: 15, lineHeight: 1 }}>{item.icon}</span>{item.label}
             </NavLink>
           ))}
         </nav>
 
-        {/* Conectar */}
-        <div style={{ padding: "12px 12px 20px", borderTop: "1px solid var(--border)" }}>
-          <a href={oauthUrl} className="btn btn-primary" style={{ width: "100%", fontSize: 13, borderRadius: 9 }}>
-            <span style={{ fontSize: 16 }}>+</span> Conectar conta
-          </a>
+        <div style={{ padding: "12px 10px 0", borderTop: "1px solid var(--border)" }}>
+          <a href={oauthUrl} className="btn btn-primary" style={{ width: "100%", fontSize: 13 }}>+ Conectar conta</a>
         </div>
       </aside>
 
-      {/* ── Main ── */}
-      <main style={{ flex: 1, overflow: "auto", minWidth: 0, background: "var(--bg)" }}>
+      <main style={{ flex: 1, overflow: "auto", minWidth: 0 }}>
         {toast && (
-          <div style={{
-            margin: "16px 28px 0", padding: "12px 16px", borderRadius: 10, fontSize: 13,
-            background: toast.type === "success" ? "var(--success-bg)" : "var(--danger-bg)",
-            color: toast.type === "success" ? "var(--success)" : "var(--danger)",
-            border: `1px solid ${toast.type === "success" ? "rgba(52,211,153,0.25)" : "rgba(248,113,113,0.25)"}`,
-            display: "flex", alignItems: "center", gap: 8,
-          }}>
-            <span>{toast.type === "success" ? "✓" : "✕"}</span>
+          <div style={{ margin: "16px 32px 0", padding: "11px 16px", borderRadius: 10, fontSize: 13, background: toast.type === "success" ? "#05422e" : "#3b0d0d", color: toast.type === "success" ? "var(--success)" : "var(--danger)", border: `1px solid ${toast.type === "success" ? "#34d39940" : "#f8717140"}` }}>
             {toast.msg}
+          </div>
+        )}
+        {swStatus === "unsupported" && (
+          <div style={{ margin: "16px 32px 0", padding: "10px 16px", borderRadius: 10, fontSize: 12, background: "#3b2500", color: "var(--warning)", border: "1px solid #fbbf2440" }}>
+            ⚠️ Seu navegador não suporta Service Worker. Agendamentos só funcionam com a aba aberta.
           </div>
         )}
         <Routes>
