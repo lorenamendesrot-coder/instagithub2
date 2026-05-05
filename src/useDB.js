@@ -2,7 +2,7 @@
 
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open("insta_manager", 2);
+    const req = indexedDB.open("insta_manager", 3);
     req.onupgradeneeded = (e) => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains("queue")) {
