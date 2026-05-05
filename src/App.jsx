@@ -1,35 +1,26 @@
-import { Routes, Route, NavLink, useLocation } from "react-router-dom";
+import { Routes, Route, NavLink } from "react-router-dom";
 import { useEffect, useState } from "react";
 import Accounts from "./pages/Accounts.jsx";
 import NewPost from "./pages/NewPost.jsx";
+import Schedule from "./pages/Schedule.jsx";
 import History from "./pages/History.jsx";
 
 export const useAccounts = () => {
   const [accounts, setAccounts] = useState(() => {
     try { return JSON.parse(localStorage.getItem("ig_accounts") || "[]"); } catch { return []; }
   });
-
-  const saveAccounts = (list) => {
-    localStorage.setItem("ig_accounts", JSON.stringify(list));
-    setAccounts(list);
-  };
-
+  const saveAccounts = (list) => { localStorage.setItem("ig_accounts", JSON.stringify(list)); setAccounts(list); };
   const addAccounts = (newAccs) => {
     const existing = JSON.parse(localStorage.getItem("ig_accounts") || "[]");
     const merged = [...existing];
     for (const acc of newAccs) {
       const idx = merged.findIndex((a) => a.id === acc.id);
-      if (idx >= 0) merged[idx] = acc;
-      else merged.push(acc);
+      if (idx >= 0) merged[idx] = acc; else merged.push(acc);
     }
     saveAccounts(merged);
     return merged.length - existing.length;
   };
-
-  const removeAccount = (id) => {
-    saveAccounts(accounts.filter((a) => a.id !== id));
-  };
-
+  const removeAccount = (id) => saveAccounts(accounts.filter((a) => a.id !== id));
   return { accounts, addAccounts, removeAccount, setAccounts: saveAccounts };
 };
 
@@ -37,30 +28,25 @@ export const useHistory = () => {
   const [history, setHistory] = useState(() => {
     try { return JSON.parse(localStorage.getItem("ig_history") || "[]"); } catch { return []; }
   });
-
   const addEntry = (entry) => {
     const prev = JSON.parse(localStorage.getItem("ig_history") || "[]");
     const updated = [entry, ...prev].slice(0, 200);
     localStorage.setItem("ig_history", JSON.stringify(updated));
     setHistory(updated);
   };
-
-  const clearHistory = () => {
-    localStorage.removeItem("ig_history");
-    setHistory([]);
-  };
-
+  const clearHistory = () => { localStorage.removeItem("ig_history"); setHistory([]); };
   return { history, addEntry, clearHistory };
 };
 
 const NAV = [
-  { to: "/", label: "Contas", icon: "○" },
-  { to: "/novo", label: "Novo post", icon: "+" },
-  { to: "/historico", label: "Histórico", icon: "≡" },
+  { to: "/",         label: "Contas",       icon: "○" },
+  { to: "/novo",     label: "Novo post",    icon: "+" },
+  { to: "/agendar",  label: "Agendamentos", icon: "◷" },
+  { to: "/historico",label: "Histórico",    icon: "≡" },
 ];
 
 export default function App() {
-  const { addAccounts } = useAccounts();
+  const { addAccounts, accounts } = useAccounts();
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
@@ -68,21 +54,15 @@ export default function App() {
     const encoded = params.get("accounts");
     const error = params.get("error");
     window.history.replaceState({}, "", "/");
-
     if (encoded) {
       try {
-        const accounts = JSON.parse(atob(encoded.replace(/-/g, "+").replace(/_/g, "/")));
-        const added = addAccounts(accounts);
-        setToast({ type: "success", msg: `${accounts.length} conta(s) conectada(s) com sucesso!` });
-      } catch {
-        setToast({ type: "error", msg: "Erro ao importar contas." });
-      }
+        const accs = JSON.parse(atob(encoded.replace(/-/g, "+").replace(/_/g, "/")));
+        addAccounts(accs);
+        setToast({ type: "success", msg: `${accs.length} conta(s) conectada(s) com sucesso!` });
+      } catch { setToast({ type: "error", msg: "Erro ao importar contas." }); }
       setTimeout(() => setToast(null), 4000);
     }
-    if (error) {
-      setToast({ type: "error", msg: decodeURIComponent(error) });
-      setTimeout(() => setToast(null), 5000);
-    }
+    if (error) { setToast({ type: "error", msg: decodeURIComponent(error) }); setTimeout(() => setToast(null), 5000); }
   }, []);
 
   const APP_ID = import.meta.env.VITE_META_APP_ID;
@@ -92,55 +72,56 @@ export default function App() {
 
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
-      {/* Sidebar */}
-      <aside style={{
-        width: 210, background: "var(--bg2)", borderRight: "1px solid var(--border)",
-        display: "flex", flexDirection: "column", padding: "20px 0", flexShrink: 0, position: "sticky", top: 0, height: "100vh",
-      }}>
+      <aside style={{ width: 220, background: "var(--bg2)", borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", padding: "20px 0", flexShrink: 0, position: "sticky", top: 0, height: "100vh" }}>
         <div style={{ padding: "0 18px 20px", borderBottom: "1px solid var(--border)", marginBottom: 8 }}>
           <div style={{ fontWeight: 600, fontSize: 15, letterSpacing: "-0.01em" }}>Insta Manager</div>
           <div style={{ color: "var(--muted)", fontSize: 11, marginTop: 2 }}>Meta Graph API</div>
         </div>
 
+        {accounts.length > 0 && (
+          <div style={{ padding: "8px 14px 10px", borderBottom: "1px solid var(--border)", marginBottom: 8 }}>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6, fontWeight: 500, letterSpacing: "0.03em" }}>CONTAS ({accounts.length})</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 160, overflowY: "auto" }}>
+              {accounts.map((acc) => (
+                <div key={acc.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {acc.profile_picture
+                    ? <img src={acc.profile_picture} alt="" style={{ width: 22, height: 22, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+                    : <div style={{ width: 22, height: 22, borderRadius: "50%", background: "var(--bg3)", flexShrink: 0 }} />}
+                  <span style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>@{acc.username}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <nav style={{ padding: "8px 10px", flex: 1 }}>
           {NAV.map((item) => (
             <NavLink key={item.to} to={item.to} end={item.to === "/"}
               style={({ isActive }) => ({
-                display: "flex", alignItems: "center", gap: 10,
-                padding: "9px 12px", borderRadius: 8, marginBottom: 2,
-                color: isActive ? "var(--accent-light)" : "var(--muted)",
-                background: isActive ? "#7c5cfc18" : "transparent",
+                display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 8, marginBottom: 2,
+                color: isActive ? "var(--accent-light)" : "var(--muted)", background: isActive ? "#7c5cfc18" : "transparent",
                 fontWeight: isActive ? 500 : 400, fontSize: 14, transition: "all 0.12s",
-              })}
-            >
-              <span style={{ fontSize: 15, lineHeight: 1 }}>{item.icon}</span>
-              {item.label}
+              })}>
+              <span style={{ fontSize: 15, lineHeight: 1 }}>{item.icon}</span>{item.label}
             </NavLink>
           ))}
         </nav>
 
         <div style={{ padding: "12px 10px 0", borderTop: "1px solid var(--border)" }}>
-          <a href={oauthUrl} className="btn btn-primary" style={{ width: "100%", fontSize: 13 }}>
-            + Conectar conta
-          </a>
+          <a href={oauthUrl} className="btn btn-primary" style={{ width: "100%", fontSize: 13 }}>+ Conectar conta</a>
         </div>
       </aside>
 
-      {/* Main */}
       <main style={{ flex: 1, overflow: "auto", minWidth: 0 }}>
         {toast && (
-          <div style={{
-            margin: "16px 32px 0", padding: "11px 16px", borderRadius: 10, fontSize: 13,
-            background: toast.type === "success" ? "#05422e" : "#3b0d0d",
-            color: toast.type === "success" ? "var(--success)" : "var(--danger)",
-            border: `1px solid ${toast.type === "success" ? "#34d39940" : "#f8717140"}`,
-          }}>
+          <div style={{ margin: "16px 32px 0", padding: "11px 16px", borderRadius: 10, fontSize: 13, background: toast.type === "success" ? "#05422e" : "#3b0d0d", color: toast.type === "success" ? "var(--success)" : "var(--danger)", border: `1px solid ${toast.type === "success" ? "#34d39940" : "#f8717140"}` }}>
             {toast.msg}
           </div>
         )}
         <Routes>
-          <Route path="/" element={<Accounts />} />
-          <Route path="/novo" element={<NewPost />} />
+          <Route path="/"         element={<Accounts />} />
+          <Route path="/novo"     element={<NewPost />} />
+          <Route path="/agendar"  element={<Schedule />} />
           <Route path="/historico" element={<History />} />
         </Routes>
       </main>
