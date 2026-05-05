@@ -1,6 +1,6 @@
 const GRAPH = "https://graph.facebook.com/v19.0";
 
-export const handler = async (event) => {
+exports.handler = async (event) => {
   const code = event.queryStringParameters?.code;
   if (!code) {
     return { statusCode: 302, headers: { Location: "/?error=sem_codigo" } };
