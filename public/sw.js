@@ -1,54 +1,36 @@
-// Service Worker — Insta Manager Scheduler
-// Roda em background mesmo com a aba fechada (enquanto o navegador estiver aberto)
+// Service Worker — Insta Manager Scheduler v4
+const TICK_INTERVAL = 20000;
 
-const CACHE = "insta-sw-v1";
-const TICK_INTERVAL = 15000; // 15 segundos
-
-self.addEventListener("install", (e) => {
-  self.skipWaiting();
-});
-
+self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => {
   e.waitUntil(self.clients.claim());
   startTicker();
 });
 
-// ─── Ticker ─────────────────────────────────────────────────────────────────
-
 let tickerInterval = null;
-
 function startTicker() {
-  if (tickerInterval) return;
+  if (tickerInterval) clearInterval(tickerInterval);
   tickerInterval = setInterval(tick, TICK_INTERVAL);
-  tick(); // roda imediatamente ao ativar
+  setTimeout(tick, 1000);
 }
 
 async function tick() {
-  // Lê a fila do IndexedDB (compartilhado com o front)
   const queue = await readQueue();
   const now = Date.now();
-  const due = queue.filter((item) => item.scheduledAt <= now && item.status === "pending");
-
-  if (due.length === 0) return;
-
-  for (const item of due) {
-    await runItem(item, queue);
-  }
+  const due = queue.filter((x) => x.scheduledAt <= now && x.status === "pending");
+  for (const item of due) await runItem(item);
 }
 
-async function runItem(item, queue) {
-  // Marca como running
+async function runItem(item) {
   await updateItem(item.id, { status: "running" });
   notifyClients({ type: "QUEUE_UPDATE" });
 
   try {
-    // Descobre a origem para montar a URL da API
-    const clients = await self.clients.matchAll({ includeUncontrolled: true });
-    const origin = clients[0]?.url
-      ? new URL(clients[0].url).origin
-      : self.location.origin;
+    // FIX CRITICO: usar self.location.origin + caminho direto da function
+    const origin = self.location.origin;
+    const apiUrl = `${origin}/.netlify/functions/publish`;
 
-    const res = await fetch(`${origin}/api/publish`, {
+    const res = await fetch(apiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -62,18 +44,17 @@ async function runItem(item, queue) {
       }),
     });
 
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
     const data = await res.json();
     const results = data.results || [];
     const successCount = results.filter((r) => r.success).length;
 
-    // Salva no histórico
     await appendHistory({
       id: Date.now(),
       post_type: item.postType,
       media_url: item.mediaUrl,
       media_type: item.mediaType,
       default_caption: item.caption || "",
-      delay_seconds: 0,
       results,
       created_at: new Date().toISOString(),
       from_scheduler: true,
@@ -81,52 +62,39 @@ async function runItem(item, queue) {
 
     if (item.loop) {
       const next = item.scheduledAt + 24 * 60 * 60 * 1000;
-      await updateItem(item.id, {
-        status: "pending",
-        scheduledAt: next,
-        runCount: (item.runCount || 0) + 1,
-        lastResults: results,
-      });
+      await updateItem(item.id, { status: "pending", scheduledAt: next, runCount: (item.runCount || 0) + 1, lastResults: results });
     } else {
       await updateItem(item.id, { status: "done", results });
     }
 
-    // Notificação push (se permitido)
-    if (self.registration.showNotification && successCount > 0) {
-      self.registration.showNotification("Insta Manager", {
-        body: `✅ Post publicado em ${successCount}/${results.length} conta(s): ${truncate(item.mediaUrl, 40)}`,
-        icon: "/favicon.ico",
-        tag: `published-${item.id}`,
-      });
-    }
+    try {
+      if (Notification.permission === "granted") {
+        self.registration.showNotification("Insta Manager", {
+          body: `✅ ${successCount}/${results.length} conta(s) publicadas`,
+          icon: "/favicon.ico", tag: `pub-${item.id}`,
+        });
+      }
+    } catch (_) {}
   } catch (err) {
     await updateItem(item.id, { status: "error", error: err.message });
-
-    if (self.registration.showNotification) {
-      self.registration.showNotification("Insta Manager — Erro", {
-        body: `❌ Falha ao publicar: ${err.message}`,
-        icon: "/favicon.ico",
-        tag: `error-${item.id}`,
-      });
-    }
+    try {
+      if (Notification.permission === "granted") {
+        self.registration.showNotification("Insta Manager — Erro", {
+          body: `❌ ${err.message}`, icon: "/favicon.ico", tag: `err-${item.id}`,
+        });
+      }
+    } catch (_) {}
   }
-
   notifyClients({ type: "QUEUE_UPDATE" });
 }
 
-// ─── IndexedDB helpers ───────────────────────────────────────────────────────
-
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open("insta_manager", 2);
+    const req = indexedDB.open("insta_manager", 3);
     req.onupgradeneeded = (e) => {
       const db = e.target.result;
-      if (!db.objectStoreNames.contains("queue")) {
-        db.createObjectStore("queue", { keyPath: "id" });
-      }
-      if (!db.objectStoreNames.contains("history")) {
-        db.createObjectStore("history", { keyPath: "id" });
-      }
+      if (!db.objectStoreNames.contains("queue")) db.createObjectStore("queue", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("history")) db.createObjectStore("history", { keyPath: "id" });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -169,24 +137,11 @@ async function appendHistory(entry) {
   });
 }
 
-// ─── Comunicação com o front ─────────────────────────────────────────────────
-
 function notifyClients(msg) {
-  self.clients.matchAll({ includeUncontrolled: true }).then((clients) => {
-    clients.forEach((c) => c.postMessage(msg));
-  });
+  self.clients.matchAll({ includeUncontrolled: true }).then((cs) => cs.forEach((c) => c.postMessage(msg)));
 }
 
-// Mensagens recebidas do front
 self.addEventListener("message", (e) => {
-  if (e.data?.type === "PING") {
-    e.source?.postMessage({ type: "PONG" });
-  }
-  if (e.data?.type === "FORCE_TICK") {
-    tick();
-  }
+  if (e.data?.type === "PING") e.source?.postMessage({ type: "PONG" });
+  if (e.data?.type === "FORCE_TICK") tick();
 });
-
-function truncate(str, n) {
-  return str?.length > n ? str.slice(0, n) + "…" : str;
-}

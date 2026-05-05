@@ -4,74 +4,66 @@ import MediaPreview from "../MediaPreview.jsx";
 import { dbGetAll, dbPut, dbPutMany, dbDelete, dbClear } from "../useDB.js";
 
 const POST_TYPES = [
-  { value: "FEED",  label: "Feed",  desc: "Foto ou vídeo" },
-  { value: "REEL",  label: "Reel",  desc: "Foto ou vídeo curto" },
-  { value: "STORY", label: "Story", desc: "Desaparece em 24h" },
+  { value: "FEED",  label: "Feed",  desc: "Foto ou vídeo", icon: "🖼" },
+  { value: "REEL",  label: "Reel",  desc: "Vídeo curto",   icon: "🎬" },
+  { value: "STORY", label: "Story", desc: "24 horas",      icon: "⭕" },
 ];
+
+// Data atual + N minutos, formato datetime-local
+function nowPlus(minutes = 1) {
+  const d = new Date(Date.now() + minutes * 60000);
+  d.setSeconds(0, 0);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 function randomBetween(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
-function randomDelay(minMin, maxMin) {
-  return randomBetween(minMin, maxMin) * 60 + randomBetween(0, 59);
-}
 
-// ─── Hook de fila — IndexedDB + escuta do SW ─────────────────────────────────
+// Hook de fila IndexedDB + SW
 function useScheduler(addEntry) {
   const [queue, setQueue] = useState([]);
-
   const reload = useCallback(async () => {
     const all = await dbGetAll("queue");
     all.sort((a, b) => a.scheduledAt - b.scheduledAt);
     setQueue(all);
   }, []);
 
-  // Carrega inicial + escuta atualizações do SW
   useEffect(() => {
     reload();
-    const handler = () => reload();
-    window.addEventListener("sw:queue-update", handler);
-    return () => window.removeEventListener("sw:queue-update", handler);
+    const h = () => reload();
+    window.addEventListener("sw:queue-update", h);
+    return () => window.removeEventListener("sw:queue-update", h);
   }, []);
 
-  // Tick local — fallback caso SW não esteja disponível
+  // Fallback tick local se SW indisponível
   useEffect(() => {
     const tick = async () => {
+      const swActive = navigator.serviceWorker?.controller != null;
+      if (swActive) return;
       const all = await dbGetAll("queue");
       const now = Date.now();
       const due = all.filter((x) => x.scheduledAt <= now && x.status === "pending");
-      if (due.length === 0) return;
-
-      // Verifica se SW está ativo
-      const swActive = navigator.serviceWorker?.controller != null;
-      if (swActive) return; // SW cuida disso
+      if (!due.length) return;
 
       for (const item of due) {
         await dbPut("queue", { ...item, status: "running" });
-        setQueue((prev) => prev.map((x) => x.id === item.id ? { ...x, status: "running" } : x));
-
+        reload();
         try {
-          const res = await fetch("/api/publish", {
+          const res = await fetch("/.netlify/functions/publish", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              accounts: item.accounts,
-              media_url: item.mediaUrl,
-              media_type: item.mediaType,
-              post_type: item.postType,
-              captions: item.captions || {},
-              default_caption: item.caption || "",
-              delay_seconds: 0,
+              accounts: item.accounts, media_url: item.mediaUrl, media_type: item.mediaType,
+              post_type: item.postType, captions: item.captions || {}, default_caption: item.caption || "", delay_seconds: 0,
             }),
           });
           const data = await res.json();
           const results = data.results || [];
-
-          await addEntry({ id: Date.now(), post_type: item.postType, media_url: item.mediaUrl, media_type: item.mediaType, default_caption: item.caption, delay_seconds: 0, results, created_at: new Date().toISOString() });
-
+          await addEntry({ id: Date.now(), post_type: item.postType, media_url: item.mediaUrl, media_type: item.mediaType, default_caption: item.caption, results, created_at: new Date().toISOString(), from_scheduler: true });
           if (item.loop) {
-            const next = item.scheduledAt + 24 * 60 * 60 * 1000;
-            await dbPut("queue", { ...item, status: "pending", scheduledAt: next, runCount: (item.runCount || 0) + 1, lastResults: results });
+            await dbPut("queue", { ...item, status: "pending", scheduledAt: item.scheduledAt + 86400000, runCount: (item.runCount || 0) + 1 });
           } else {
             await dbPut("queue", { ...item, status: "done", results });
           }
@@ -81,143 +73,174 @@ function useScheduler(addEntry) {
       }
       reload();
     };
-
-    const interval = setInterval(tick, 15000);
+    const iv = setInterval(tick, 15000);
     tick();
-    return () => clearInterval(interval);
+    return () => clearInterval(iv);
   }, []);
 
-  const addBatch = async (batch) => {
-    await dbPutMany("queue", batch);
-    reload();
-  };
-
-  const removeItem = async (id) => {
-    await dbDelete("queue", id);
-    setQueue((prev) => prev.filter((x) => x.id !== id));
-  };
-
-  const clearQueue = async () => {
-    await dbClear("queue");
-    setQueue([]);
-  };
-
+  const addBatch   = async (b) => { await dbPutMany("queue", b); reload(); };
+  const removeItem = async (id) => { await dbDelete("queue", id); setQueue((p) => p.filter((x) => x.id !== id)); };
+  const clearQueue = async () => { await dbClear("queue"); setQueue([]); };
   return { queue, addBatch, removeItem, clearQueue, reload };
 }
 
 // ─── Componente principal ────────────────────────────────────────────────────
 export default function Schedule() {
   const { accounts } = useAccounts();
-  const { addEntry } = useHistory();
+  const { addEntry }  = useHistory();
   const { queue, addBatch, removeItem, clearQueue } = useScheduler(addEntry);
 
-  const [postType, setPostType]   = useState("FEED");
-  const [mediaType, setMediaType] = useState("IMAGE");
-  const [caption, setCaption]     = useState("");
+  const [postType,    setPostType]    = useState("FEED");
+  const [mediaType,   setMediaType]   = useState("IMAGE");
+  const [caption,     setCaption]     = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
-  const [loop, setLoop]           = useState(false);
+  const [loop,        setLoop]        = useState(false);
+  const [urlList,     setUrlList]     = useState([{ id: 1, url: "" }]);
+  const [previewIdx,  setPreviewIdx]  = useState(0);
+  const [startTime,   setStartTime]   = useState(nowPlus(1));
+  // Intervalo padrão: 30s ~ 1min (0.5 ~ 1 minuto)
+  const [intervalMin, setIntervalMin] = useState(0.5); // em minutos
+  const [intervalMax, setIntervalMax] = useState(1);
+  const [showRepeat,  setShowRepeat]  = useState(false);
+  const [repeatSel,   setRepeatSel]   = useState([]);
+  const [metrics,     setMetrics]     = useState({}); // { [media_id]: { likes, comments, ... } }
+  const [fetchingMet, setFetchingMet] = useState(false);
 
-  const [urlList, setUrlList]     = useState([{ id: 1, url: "" }]);
-  const [previewIdx, setPreviewIdx] = useState(0); // qual URL está em preview
-
-  const [startTime, setStartTime] = useState(() => {
-    const d = new Date(); d.setMinutes(d.getMinutes() + 5, 0, 0);
-    return d.toISOString().slice(0, 16);
-  });
-  const [intervalMin, setIntervalMin] = useState(10);
-  const [intervalMax, setIntervalMax] = useState(20);
-
-  const [showRepeat, setShowRepeat]       = useState(false);
-  const [repeatSelected, setRepeatSelected] = useState([]);
-
-  const toggleAccount = (id) => setSelectedIds((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
+  const toggleAcc = (id) => setSelectedIds((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
   const selectAll = () => setSelectedIds(accounts.map((a) => a.id));
   const clearAll  = () => setSelectedIds([]);
 
   const addUrl    = () => setUrlList((p) => [...p, { id: Date.now(), url: "" }]);
   const removeUrl = (id) => setUrlList((p) => p.filter((x) => x.id !== id));
-  const setUrl    = (id, val) => setUrlList((p) => p.map((x) => x.id === id ? { ...x, url: val } : x));
+  const setUrl    = (id, v) => setUrlList((p) => p.map((x) => x.id === id ? { ...x, url: v } : x));
 
   const selectedAccounts = accounts.filter((a) => selectedIds.includes(a.id));
-  const activePreviewUrl = urlList[previewIdx]?.url || "";
+  const activeUrl = urlList[previewIdx]?.url || "";
+  const validUrls = urlList.map((x) => x.url.trim()).filter(Boolean);
+
+  // Resetar startTime sempre que abrir a página (sempre horário atual + 1min)
+  useEffect(() => { setStartTime(nowPlus(1)); }, []);
 
   const schedule = async () => {
-    const urls = urlList.map((x) => x.url.trim()).filter(Boolean);
-    if (urls.length === 0) return alert("Adicione ao menos uma URL de mídia");
-    if (selectedIds.length === 0) return alert("Selecione ao menos uma conta");
+    if (!validUrls.length)   return alert("Adicione ao menos uma URL de mídia");
+    if (!selectedIds.length) return alert("Selecione ao menos uma conta");
 
     const base = new Date(startTime).getTime();
     const batches = [];
     let cursor = base;
 
-    urls.forEach((url, i) => {
-      if (i > 0) cursor += randomDelay(intervalMin, intervalMax) * 1000;
+    validUrls.forEach((url, i) => {
+      if (i > 0) {
+        // Intervalo em segundos com jitter
+        const minSec = Math.round(intervalMin * 60);
+        const maxSec = Math.round(intervalMax * 60);
+        const delay  = randomBetween(minSec, maxSec) + randomBetween(0, 30);
+        cursor += delay * 1000;
+      }
       batches.push({
-        id: `${Date.now()}-${i}`,
+        id: `${Date.now()}-${i}-${Math.random().toString(36).slice(2)}`,
         scheduledAt: cursor,
         status: "pending",
-        postType, mediaType, mediaUrl: url, caption,
-        captions: {},
-        accounts: selectedAccounts,
-        loop,
-        runCount: 0,
+        postType, mediaType, mediaUrl: url, caption, captions: {},
+        accounts: selectedAccounts, loop, runCount: 0,
       });
     });
 
     await addBatch(batches);
     setUrlList([{ id: 1, url: "" }]);
     setPreviewIdx(0);
-
-    // Avisar o SW para fazer um tick imediato
-    if (navigator.serviceWorker?.controller) {
+    setStartTime(nowPlus(1));
+    if (navigator.serviceWorker?.controller)
       navigator.serviceWorker.controller.postMessage({ type: "FORCE_TICK" });
-    }
+    alert(`✅ ${batches.length} post(s) agendado(s)!`);
+  };
 
-    alert(`${batches.length} post(s) agendado(s)!`);
+  // Buscar métricas da Meta API para posts publicados
+  const fetchMetrics = async () => {
+    setFetchingMet(true);
+    const doneItems = queue.filter((x) => x.status === "done" && x.results?.some((r) => r.success && r.media_id));
+    const newMetrics = { ...metrics };
+
+    for (const item of doneItems) {
+      for (const result of (item.results || [])) {
+        if (!result.success || !result.media_id) continue;
+        // Encontrar o token da conta correspondente
+        const acc = accounts.find((a) => a.id === result.account_id || item.accounts?.find((ia) => ia.username === result.username)?.id === a.id);
+        if (!acc?.access_token) continue;
+        if (newMetrics[result.media_id]) continue; // já buscou
+
+        try {
+          const res = await fetch(
+            `https://graph.facebook.com/v19.0/${result.media_id}/insights?metric=impressions,reach,likes_count,comments_count,shares&access_token=${acc.access_token}`
+          );
+          const data = await res.json();
+          if (!data.error) {
+            const m = {};
+            (data.data || []).forEach((d) => { m[d.name] = d.values?.[0]?.value ?? d.value ?? 0; });
+            newMetrics[result.media_id] = m;
+          }
+        } catch (_) {}
+      }
+    }
+    setMetrics(newMetrics);
+    setFetchingMet(false);
   };
 
   const scheduleRepeat = async () => {
-    if (repeatSelected.length === 0) return alert("Selecione ao menos um post para repetir");
+    if (!repeatSel.length) return alert("Selecione posts para repetir");
     const base = new Date(startTime).getTime();
     const batches = [];
     let cursor = base;
 
-    repeatSelected.forEach((id, i) => {
+    repeatSel.forEach((id, i) => {
       const src = queue.find((x) => x.id === id);
       if (!src) return;
-      if (i > 0) cursor += randomDelay(intervalMin, intervalMax) * 1000;
+      if (i > 0) {
+        const minSec = Math.round(intervalMin * 60);
+        const maxSec = Math.round(intervalMax * 60);
+        cursor += (randomBetween(minSec, maxSec) + randomBetween(0, 30)) * 1000;
+      }
       batches.push({
-        id: `${Date.now()}-rep-${i}`,
-        scheduledAt: cursor,
-        status: "pending",
-        postType: src.postType,
-        mediaType: src.mediaType,
-        mediaUrl: src.mediaUrl,
-        caption: src.caption || caption,
-        captions: {},
-        accounts: selectedAccounts.length > 0 ? selectedAccounts : (src.accounts || []),
-        loop,
-        runCount: 0,
+        id: `${Date.now()}-rep-${i}-${Math.random().toString(36).slice(2)}`,
+        scheduledAt: cursor, status: "pending",
+        postType: src.postType, mediaType: src.mediaType, mediaUrl: src.mediaUrl,
+        caption: src.caption || caption, captions: {},
+        accounts: selectedAccounts.length ? selectedAccounts : (src.accounts || []),
+        loop, runCount: 0,
       });
     });
 
     await addBatch(batches);
     setShowRepeat(false);
-    setRepeatSelected([]);
-    alert(`${batches.length} post(s) reagendado(s)!`);
+    setRepeatSel([]);
+    setStartTime(nowPlus(1));
+    alert(`✅ ${batches.length} post(s) reagendado(s)!`);
   };
 
-  const statusColor = { pending: "var(--accent-light)", running: "var(--warning)", done: "var(--success)", error: "var(--danger)" };
-  const statusLabel = { pending: "Aguardando", running: "Publicando…", done: "Publicado", error: "Erro" };
+  const pendingQueue  = queue.filter((x) => x.status === "pending" || x.status === "running");
+  const doneQueue     = queue.filter((x) => x.status === "done" || x.status === "error");
+  const repeatablePosts = queue.filter((x) => x.status === "done");
 
-  const pendingQueue = queue.filter((x) => x.status === "pending" || x.status === "running");
-  const doneQueue    = queue.filter((x) => x.status === "done" || x.status === "error");
-  const repeatablePosts = queue.filter((x) => x.status === "done" || x.status === "pending");
+  // Ordenar posts do dia por engajamento para sugestão de loop
+  const postsWithMetrics = repeatablePosts.map((item) => {
+    const mediaIds = (item.results || []).filter((r) => r.success && r.media_id).map((r) => r.media_id);
+    const score = mediaIds.reduce((acc, mid) => {
+      const m = metrics[mid] || {};
+      return acc + (m.likes_count || 0) * 2 + (m.comments_count || 0) * 4 + (m.shares || 0) * 3 + (m.impressions || 0) * 0.01;
+    }, 0);
+    return { ...item, score };
+  }).sort((a, b) => b.score - a.score);
+
+  const STATUS_COLOR = { pending: "var(--accent2)", running: "var(--warning)", done: "var(--success)", error: "var(--danger)" };
+  const STATUS_LABEL = { pending: "Aguardando", running: "Publicando…", done: "Publicado", error: "Erro" };
 
   return (
     <div className="page">
       <div className="page-header">
-        <div className="page-title">Agendamentos</div>
+        <div>
+          <div className="page-title">Agendamentos</div>
+          <div className="page-subtitle">Agende posts com intervalo aleatório humanizado</div>
+        </div>
         {queue.length > 0 && (
           <button className="btn btn-danger btn-sm" onClick={() => confirm("Limpar toda a fila?") && clearQueue()}>
             Limpar fila
@@ -225,23 +248,20 @@ export default function Schedule() {
         )}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 20, alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 20, alignItems: "start" }}>
+        {/* ── Coluna esquerda ── */}
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* Tipo */}
+          {/* Tipo de post */}
           <div className="card">
-            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 12 }}>Tipo de post</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 12 }}>Tipo de post</div>
             <div style={{ display: "flex", gap: 8 }}>
               {POST_TYPES.map((t) => (
-                <button key={t.value} onClick={() => setPostType(t.value)} style={{
-                  flex: 1, padding: "11px 8px", borderRadius: 8, border: "1px solid",
-                  borderColor: postType === t.value ? "var(--accent)" : "var(--border)",
-                  background: postType === t.value ? "#7c5cfc18" : "var(--bg3)",
-                  color: postType === t.value ? "var(--accent-light)" : "var(--muted)",
-                  textAlign: "center", transition: "all 0.12s",
-                }}>
-                  <div style={{ fontWeight: 500, fontSize: 13 }}>{t.label}</div>
-                  <div style={{ fontSize: 11, marginTop: 2 }}>{t.desc}</div>
+                <button key={t.value} onClick={() => setPostType(t.value)}
+                  className={`type-btn ${postType === t.value ? "active" : ""}`}>
+                  <span style={{ fontSize: 18, display: "block", marginBottom: 4 }}>{t.icon}</span>
+                  <span className="type-label">{t.label}</span>
+                  <span className="type-desc" style={{ color: postType === t.value ? "var(--accent3)" : "var(--muted)" }}>{t.desc}</span>
                 </button>
               ))}
             </div>
@@ -249,161 +269,194 @@ export default function Schedule() {
 
           {/* Tipo de mídia */}
           <div className="card">
-            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10 }}>Tipo de mídia</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 10 }}>Tipo de mídia</div>
             <div style={{ display: "flex", gap: 8 }}>
-              {["IMAGE", "VIDEO"].map((t) => (
-                <button key={t} onClick={() => setMediaType(t)} style={{
-                  flex: 1, padding: "8px", borderRadius: 8, border: "1px solid",
-                  borderColor: mediaType === t ? "var(--accent)" : "var(--border)",
-                  background: mediaType === t ? "#7c5cfc18" : "var(--bg3)",
-                  color: mediaType === t ? "var(--accent-light)" : "var(--muted)",
-                  fontSize: 13, fontWeight: mediaType === t ? 500 : 400,
-                }}>
-                  {t === "IMAGE" ? "🖼 Imagem" : "🎬 Vídeo"}
+              {[{ v: "IMAGE", l: "🖼 Imagem" }, { v: "VIDEO", l: "🎬 Vídeo" }].map(({ v, l }) => (
+                <button key={v} onClick={() => setMediaType(v)}
+                  className={`type-btn ${mediaType === v ? "active" : ""}`}
+                  style={{ padding: "10px" }}>
+                  <span style={{ fontSize: 13, fontWeight: mediaType === v ? 600 : 400 }}>{l}</span>
                 </button>
               ))}
             </div>
           </div>
 
-          {/* URLs com preview */}
+          {/* URLs */}
           <div className="card">
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ fontSize: 13, fontWeight: 500 }}>URLs das mídias ({urlList.length})</div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>URLs das mídias ({urlList.length})</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>Cada URL = 1 post, publicados em sequência</div>
+              </div>
               <button className="btn btn-ghost btn-sm" onClick={addUrl}>+ Adicionar URL</button>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {urlList.map((item, i) => (
                 <div key={item.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: "var(--muted)", width: 20, flexShrink: 0, textAlign: "right" }}>{i + 1}.</span>
+                  <span style={{ fontSize: 12, color: "var(--muted)", width: 22, flexShrink: 0, textAlign: "right", fontWeight: 600 }}>{i + 1}</span>
                   <input
                     type="url"
                     placeholder="https://files.catbox.moe/xxxxxx.jpg"
                     value={item.url}
                     onChange={(e) => setUrl(item.id, e.target.value)}
                     onFocus={() => setPreviewIdx(i)}
-                    style={{ flex: 1, borderColor: previewIdx === i && item.url ? "var(--accent)" : undefined }}
+                    style={{ borderColor: previewIdx === i && item.url ? "var(--accent)" : undefined }}
                   />
                   {urlList.length > 1 && (
-                    <button onClick={() => removeUrl(item.id)} style={{ background: "none", color: "var(--danger)", fontSize: 16, padding: "0 4px", flexShrink: 0 }}>×</button>
+                    <button onClick={() => removeUrl(item.id)}
+                      style={{ background: "none", color: "var(--muted)", fontSize: 18, padding: "0 4px", flexShrink: 0, lineHeight: 1 }}>×</button>
                   )}
                 </div>
               ))}
             </div>
-
-            {/* Preview da URL selecionada */}
-            <MediaPreview
-              url={activePreviewUrl}
-              mediaType={mediaType}
-              onTypeDetected={(t) => setMediaType(t)}
-            />
-
-            {urlList.length > 1 && (
-              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 10 }}>
-                Clique em uma URL para ver o preview. Cada URL vira um post separado.
-              </div>
-            )}
-            {urlList.length === 1 && (
-              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: activePreviewUrl ? 8 : 10 }}>
-                Cada URL vira um post separado, publicados em sequência com o intervalo configurado.
-              </div>
-            )}
+            <MediaPreview url={activeUrl} mediaType={mediaType} onTypeDetected={setMediaType} />
           </div>
 
           {/* Legenda */}
           {(postType === "FEED" || postType === "REEL") && (
             <div className="card">
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
-                <label style={{ margin: 0 }}>Legenda (usada em todos os posts)</label>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>Legenda</div>
                 <span style={{ fontSize: 11, color: caption.length > 2100 ? "var(--danger)" : "var(--muted)" }}>{caption.length}/2200</span>
               </div>
               <textarea
                 placeholder="Escreva a legenda... #hashtags"
                 value={caption}
                 onChange={(e) => setCaption(e.target.value)}
-                style={{ minHeight: 80 }}
                 maxLength={2200}
+                style={{ minHeight: 90 }}
               />
             </div>
           )}
 
           {/* Agendamento */}
           <div className="card">
-            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 14 }}>⏰ Agendamento</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 16 }}>⏰ Agendamento</div>
             <div className="form-row">
               <label>Horário do primeiro post</label>
-              <input type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+              <input type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)}
+                min={nowPlus(0)} />
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
               <div className="form-row" style={{ marginBottom: 0 }}>
                 <label>Intervalo mínimo (min)</label>
-                <input type="number" min="1" max="1440" value={intervalMin} onChange={(e) => setIntervalMin(Math.max(1, parseInt(e.target.value) || 1))} />
+                <input type="number" min="0.1" max="1440" step="0.1" value={intervalMin}
+                  onChange={(e) => setIntervalMin(Math.max(0.1, parseFloat(e.target.value) || 0.1))} />
               </div>
               <div className="form-row" style={{ marginBottom: 0 }}>
                 <label>Intervalo máximo (min)</label>
-                <input type="number" min="1" max="1440" value={intervalMax} onChange={(e) => setIntervalMax(Math.max(intervalMin, parseInt(e.target.value) || intervalMin))} />
+                <input type="number" min="0.1" max="1440" step="0.1" value={intervalMax}
+                  onChange={(e) => setIntervalMax(Math.max(intervalMin, parseFloat(e.target.value) || intervalMin))} />
               </div>
             </div>
-            <div style={{ fontSize: 12, color: "var(--muted)", background: "var(--bg3)", padding: "10px 14px", borderRadius: 8, marginBottom: 14 }}>
-              Entre cada post: <strong style={{ color: "var(--text)" }}>{intervalMin}~{intervalMax} minutos</strong> + segundos aleatórios para parecer mais humano.
+            <div style={{ padding: "10px 14px", background: "var(--bg3)", borderRadius: 8, marginBottom: 16, fontSize: 12, color: "var(--muted)", border: "1px solid var(--border)" }}>
+              Entre cada post: <strong style={{ color: "var(--text2)" }}>{intervalMin}~{intervalMax} min</strong> + até 30s aleatórios
+              {validUrls.length > 1 && (
+                <> · Tempo total estimado: <strong style={{ color: "var(--text2)" }}>~{Math.round((validUrls.length - 1) * ((intervalMin + intervalMax) / 2))} min</strong></>
+              )}
             </div>
-            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", color: "var(--text)", fontSize: 13 }}>
-              <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} style={{ width: "auto", cursor: "pointer" }} />
-              <span>🔁 Loop diário — repetir os mesmos posts todo dia no mesmo horário</span>
+            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", color: "var(--text2)", fontSize: 13, fontWeight: 400, textTransform: "none", letterSpacing: "normal", marginBottom: 0 }}>
+              <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} style={{ width: "auto", cursor: "pointer", accentColor: "var(--accent)" }} />
+              <div>
+                <div style={{ fontWeight: 500 }}>🔁 Loop diário</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 400 }}>Repetir os mesmos posts todo dia no mesmo horário</div>
+              </div>
             </label>
           </div>
 
           {/* Botões */}
-          <div style={{ display: "flex", gap: 10 }}>
-            <button className="btn btn-primary" style={{ padding: "11px 28px", fontSize: 14 }} onClick={schedule}>
-              Agendar {urlList.filter((x) => x.url.trim()).length} post(s)
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button className="btn btn-primary" style={{ padding: "12px 28px" }} onClick={schedule}
+              disabled={!validUrls.length || !selectedIds.length}>
+              Agendar {validUrls.length} post(s) em {selectedIds.length} conta(s)
             </button>
             {repeatablePosts.length > 0 && (
-              <button className="btn btn-ghost" style={{ padding: "11px 20px", fontSize: 14 }} onClick={() => setShowRepeat(true)}>
-                ↩ Repetir posts anteriores
+              <button className="btn btn-ghost" onClick={() => { setShowRepeat(true); fetchMetrics(); }}>
+                ↩ Repetir posts do dia
               </button>
             )}
           </div>
 
-          {/* Modal repetir */}
+          {/* Modal loop inteligente */}
           {showRepeat && (
             <div className="card" style={{ border: "1px solid var(--accent)", background: "var(--bg2)" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-                <div style={{ fontWeight: 500 }}>Selecione quais posts repetir</div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 15 }}>↩ Repetir posts no próximo dia</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
+                    {fetchingMet ? "Buscando métricas da API..." : "Selecione os posts que quer repetir amanhã"}
+                  </div>
+                </div>
                 <button className="btn btn-ghost btn-sm" onClick={() => setShowRepeat(false)}>Fechar</button>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
-                {repeatablePosts.map((item) => {
-                  const sel = repeatSelected.includes(item.id);
-                  return (
-                    <button key={item.id} onClick={() => setRepeatSelected((p) => sel ? p.filter((x) => x !== item.id) : [...p, item.id])} style={{
-                      display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 8, border: "1px solid",
-                      borderColor: sel ? "var(--accent)" : "var(--border)", background: sel ? "#7c5cfc12" : "var(--bg3)", textAlign: "left", width: "100%",
-                    }}>
-                      <span style={{ fontSize: 11, color: "var(--muted)", width: 50, flexShrink: 0 }}>{item.postType}</span>
-                      <span style={{ flex: 1, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text)" }}>{item.mediaUrl}</span>
-                      <div style={{ width: 15, height: 15, borderRadius: "50%", border: `1.5px solid ${sel ? "var(--accent)" : "var(--border)"}`, background: sel ? "var(--accent)" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                        {sel && <span style={{ color: "#fff", fontSize: 9 }}>✓</span>}
-                      </div>
+              {fetchingMet && <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "12px 0", color: "var(--muted)", fontSize: 13 }}><div className="spinner" /> Buscando métricas...</div>}
+              {!fetchingMet && (
+                <>
+                  {Object.keys(metrics).length > 0 && (
+                    <div style={{ padding: "10px 14px", background: "rgba(124,92,252,0.08)", borderRadius: 8, marginBottom: 14, fontSize: 12, color: "var(--accent3)", border: "1px solid rgba(124,92,252,0.2)" }}>
+                      ✨ Posts ordenados por engajamento (curtidas × 2 + comentários × 4 + compartilhamentos × 3)
+                    </div>
+                  )}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+                    {postsWithMetrics.map((item, idx) => {
+                      const sel = repeatSel.includes(item.id);
+                      const mediaIds = (item.results || []).filter((r) => r.success && r.media_id).map((r) => r.media_id);
+                      const m = mediaIds.reduce((acc, mid) => {
+                        const mm = metrics[mid] || {};
+                        return { likes: (acc.likes || 0) + (mm.likes_count || 0), comments: (acc.comments || 0) + (mm.comments_count || 0), shares: (acc.shares || 0) + (mm.shares || 0), reach: (acc.reach || 0) + (mm.reach || 0) };
+                      }, {});
+                      return (
+                        <button key={item.id} onClick={() => setRepeatSel((p) => sel ? p.filter((x) => x !== item.id) : [...p, item.id])}
+                          style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 8, border: `1px solid ${sel ? "var(--accent)" : "var(--border)"}`, background: sel ? "rgba(124,92,252,0.1)" : "var(--bg3)", textAlign: "left", width: "100%", cursor: "pointer" }}>
+                          {idx === 0 && Object.keys(metrics).length > 0 && <span style={{ fontSize: 14 }}>🏆</span>}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {item.postType} · {item.mediaUrl?.split("/").pop() || item.mediaUrl}
+                            </div>
+                            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3, display: "flex", gap: 12 }}>
+                              <span>📅 {new Date(item.scheduledAt).toLocaleString("pt-BR")}</span>
+                              {m.likes > 0 && <span>❤️ {m.likes}</span>}
+                              {m.comments > 0 && <span>💬 {m.comments}</span>}
+                              {m.shares > 0 && <span>↗️ {m.shares}</span>}
+                              {m.reach > 0 && <span>👁 {m.reach}</span>}
+                              {item.score > 0 && <span style={{ color: "var(--accent3)" }}>Score: {Math.round(item.score)}</span>}
+                            </div>
+                          </div>
+                          <div className="acc-check" style={{ border: `1.5px solid ${sel ? "var(--accent)" : "var(--border2)"}`, background: sel ? "var(--accent)" : "transparent" }}>
+                            {sel && <span style={{ color: "#fff", fontSize: 10 }}>✓</span>}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button className="btn btn-primary" onClick={scheduleRepeat} disabled={!repeatSel.length}>
+                      Agendar {repeatSel.length} post(s) para amanhã
                     </button>
-                  );
-                })}
-              </div>
-              <button className="btn btn-primary" onClick={scheduleRepeat} disabled={repeatSelected.length === 0}>
-                Reagendar {repeatSelected.length} post(s)
-              </button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setRepeatSel(postsWithMetrics.slice(0, 3).map((x) => x.id))}>
+                      Top 3
+                    </button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setRepeatSel(postsWithMetrics.map((x) => x.id))}>
+                      Todos
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </div>
 
-        {/* Coluna direita */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {/* Contas */}
+        {/* ── Coluna direita ── */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Seleção de contas */}
           <div className="card" style={{ position: "sticky", top: 20 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ fontSize: 13, fontWeight: 500 }}>Contas <span style={{ color: "var(--muted)", fontWeight: 400 }}>{selectedIds.length}/{accounts.length}</span></div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <button className="btn btn-ghost btn-sm" onClick={selectAll}>Todas</button>
-                <button className="btn btn-ghost btn-sm" onClick={clearAll}>Limpar</button>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                Contas <span style={{ color: "var(--accent3)" }}>{selectedIds.length}/{accounts.length}</span>
+              </div>
+              <div style={{ display: "flex", gap: 5 }}>
+                <button className="btn btn-ghost btn-xs" onClick={selectAll}>Todas</button>
+                <button className="btn btn-ghost btn-xs" onClick={clearAll}>Limpar</button>
               </div>
             </div>
             {accounts.length === 0 ? (
@@ -413,16 +466,19 @@ export default function Schedule() {
                 {accounts.map((acc) => {
                   const sel = selectedIds.includes(acc.id);
                   return (
-                    <button key={acc.id} onClick={() => toggleAccount(acc.id)} style={{
-                      display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: 8, border: "1px solid",
-                      borderColor: sel ? "var(--accent)" : "var(--border)", background: sel ? "#7c5cfc12" : "var(--bg3)", textAlign: "left", width: "100%", transition: "all 0.12s",
-                    }}>
-                      {acc.profile_picture ? <img src={acc.profile_picture} alt="" style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} /> : <div style={{ width: 28, height: 28, borderRadius: "50%", background: "var(--bg2)", flexShrink: 0 }} />}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500, color: sel ? "var(--accent-light)" : "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>@{acc.username}</div>
-                        <div style={{ fontSize: 11, color: "var(--muted)" }}>{acc.account_type}</div>
+                    <button key={acc.id} onClick={() => toggleAcc(acc.id)} className={`acc-pill ${sel ? "selected" : ""}`}>
+                      {acc.profile_picture ? (
+                        <img src={acc.profile_picture} alt="" style={{ width: 30, height: 30, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
+                          onError={(e) => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
+                      ) : null}
+                      <div style={{ width: 30, height: 30, borderRadius: "50%", background: "linear-gradient(135deg, var(--accent), #9b4dfc)", display: acc.profile_picture ? "none" : "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#fff", flexShrink: 0 }}>
+                        {(acc.username || "?")[0].toUpperCase()}
                       </div>
-                      <div style={{ width: 15, height: 15, borderRadius: "50%", flexShrink: 0, border: `1.5px solid ${sel ? "var(--accent)" : "var(--border)"}`, background: sel ? "var(--accent)" : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500, color: sel ? "var(--accent3)" : "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>@{acc.username}</div>
+                        <div style={{ fontSize: 10, color: "var(--muted)" }}>{acc.account_type}</div>
+                      </div>
+                      <div className="acc-check">
                         {sel && <span style={{ color: "#fff", fontSize: 9 }}>✓</span>}
                       </div>
                     </button>
@@ -435,41 +491,57 @@ export default function Schedule() {
           {/* Fila ativa */}
           {pendingQueue.length > 0 && (
             <div className="card">
-              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 12 }}>Fila ativa ({pendingQueue.length})</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 12 }}>
+                Fila ativa ({pendingQueue.length})
+              </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {pendingQueue.map((item) => (
-                  <div key={item.id} style={{ background: "var(--bg3)", borderRadius: 8, padding: "10px 12px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                      <span style={{ fontSize: 11, fontWeight: 500, color: statusColor[item.status] }}>● {statusLabel[item.status]}</span>
-                      {item.loop && <span style={{ fontSize: 10, color: "var(--accent-light)", background: "#7c5cfc20", padding: "1px 7px", borderRadius: 10 }}>LOOP</span>}
-                      <span className="badge badge-gray" style={{ marginLeft: "auto" }}>{item.postType}</span>
-                      <button onClick={() => removeItem(item.id)} style={{ background: "none", color: "var(--muted)", fontSize: 14, padding: 0 }}>×</button>
+                  <div key={item.id} className={`queue-item ${item.status}`}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+                      <span className={`${item.status === "running" ? "pulse" : ""}`}
+                        style={{ fontSize: 8, color: STATUS_COLOR[item.status], lineHeight: 1 }}>⬤</span>
+                      <span style={{ fontSize: 12, fontWeight: 500, color: STATUS_COLOR[item.status] }}>{STATUS_LABEL[item.status]}</span>
+                      {item.loop && <span className="badge badge-purple" style={{ fontSize: 10, padding: "1px 7px" }}>LOOP</span>}
+                      <span className="badge badge-gray" style={{ marginLeft: "auto", fontSize: 10 }}>{item.postType}</span>
+                      <button onClick={() => removeItem(item.id)} style={{ background: "none", color: "var(--muted)", fontSize: 16, padding: 0, lineHeight: 1 }}>×</button>
                     </div>
-                    <div style={{ fontSize: 11, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 3 }}>{item.mediaUrl}</div>
-                    <div style={{ fontSize: 11, color: "var(--muted)" }}>
+                    <div style={{ fontSize: 11, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 4 }}>
+                      {item.mediaUrl?.split("/").pop() || item.mediaUrl}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--text2)" }}>
                       🕐 {new Date(item.scheduledAt).toLocaleString("pt-BR")}
-                      {item.runCount > 0 && <span style={{ marginLeft: 8, color: "var(--accent-light)" }}>({item.runCount}ª execução)</span>}
                     </div>
-                    <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>
-                      {item.accounts.map((a) => `@${a.username}`).join(", ")}
-                    </div>
+                    {item.accounts?.length > 0 && (
+                      <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {item.accounts.map((a) => `@${a.username}`).join(", ")}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Concluídos */}
+          {/* Concluídos recentes */}
           {doneQueue.length > 0 && (
             <div className="card">
-              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 12 }}>Concluídos ({doneQueue.length})</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 10 }}>
+                Concluídos ({doneQueue.length})
+              </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {doneQueue.slice(0, 10).map((item) => (
-                  <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", background: "var(--bg3)", borderRadius: 7 }}>
-                    <span style={{ fontSize: 11, color: statusColor[item.status] }}>●</span>
-                    <span style={{ fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--muted)" }}>{item.mediaUrl}</span>
-                    <span style={{ fontSize: 11, color: "var(--muted)" }}>{item.postType}</span>
-                    <button onClick={() => removeItem(item.id)} style={{ background: "none", color: "var(--muted)", fontSize: 13, padding: 0 }}>×</button>
+                {doneQueue.slice(0, 8).map((item) => (
+                  <div key={item.id} className={`queue-item ${item.status}`} style={{ padding: "8px 11px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                      <span style={{ fontSize: 8, color: STATUS_COLOR[item.status] }}>⬤</span>
+                      <span style={{ fontSize: 11, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text2)" }}>
+                        {item.mediaUrl?.split("/").pop() || item.mediaUrl}
+                      </span>
+                      <span style={{ fontSize: 10, color: "var(--muted)" }}>{item.postType}</span>
+                      <button onClick={() => removeItem(item.id)} style={{ background: "none", color: "var(--muted)", fontSize: 14, padding: 0 }}>×</button>
+                    </div>
+                    {item.status === "error" && (
+                      <div style={{ fontSize: 10, color: "var(--danger)", marginTop: 3 }}>{item.error}</div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -478,8 +550,8 @@ export default function Schedule() {
 
           {queue.length === 0 && (
             <div style={{ textAlign: "center", padding: "32px 0", color: "var(--muted)", fontSize: 13 }}>
-              <div style={{ fontSize: 28, marginBottom: 10 }}>◷</div>
-              Nenhum post agendado ainda.
+              <div style={{ fontSize: 32, marginBottom: 10 }}>◷</div>
+              Nenhum post agendado ainda
             </div>
           )}
         </div>
