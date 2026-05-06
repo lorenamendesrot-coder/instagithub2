@@ -1,6 +1,208 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useAccounts } from "../App.jsx";
+import { dbPut } from "../useDB.js";
 import Modal from "../Modal.jsx";
+
+// ── Formata números grandes: 1400 → 1,4k ─────────────────────────────────────
+function fmt(n) {
+  if (n == null) return "—";
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 10_000)    return (n / 1_000).toFixed(0) + "k";
+  if (n >= 1_000)     return (n / 1_000).toFixed(1).replace(/\.0$/, "") + "k";
+  return n.toLocaleString("pt-BR");
+}
+
+// ── Avatar ────────────────────────────────────────────────────────────────────
+function Avatar({ acc, size = 56 }) {
+  const initials = (acc.username || "?")[0].toUpperCase();
+  const gradients = [
+    "linear-gradient(135deg, #7c5cfc, #e040fb)",
+    "linear-gradient(135deg, #f59e0b, #ef4444)",
+    "linear-gradient(135deg, #22c55e, #38bdf8)",
+    "linear-gradient(135deg, #f97316, #ec4899)",
+  ];
+  const grad = gradients[(acc.username?.charCodeAt(0) || 0) % gradients.length];
+  return (
+    <div style={{ position: "relative", flexShrink: 0 }}>
+      {acc.profile_picture && (
+        <img src={acc.profile_picture} alt={acc.username}
+          style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--border2)", display: "block" }}
+          onError={(e) => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
+      )}
+      <div style={{ width: size, height: size, borderRadius: "50%", background: grad, display: acc.profile_picture ? "none" : "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.38, fontWeight: 700, color: "#fff", border: "2px solid var(--border2)" }}>
+        {initials}
+      </div>
+      {/* Indicador de status */}
+      <div style={{
+        position: "absolute", bottom: 1, right: 1,
+        width: 12, height: 12, borderRadius: "50%",
+        background: acc.token_status === "expired" ? "var(--danger)"
+          : acc.account_status === "limited" ? "var(--danger)"
+          : acc.account_status === "warning" ? "var(--warning)"
+          : "var(--success)",
+        border: "2px solid var(--bg2)",
+      }} />
+    </div>
+  );
+}
+
+// ── Card de stats ─────────────────────────────────────────────────────────────
+function StatBox({ label, value, icon }) {
+  return (
+    <div style={{ flex: 1, textAlign: "center", padding: "10px 6px", background: "var(--bg3)", borderRadius: 8, border: "1px solid var(--border)" }}>
+      <div style={{ fontSize: 16, marginBottom: 3 }}>{icon}</div>
+      <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text)" }}>{value}</div>
+      <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 1 }}>{label}</div>
+    </div>
+  );
+}
+
+// ── Modal detalhes da conta ───────────────────────────────────────────────────
+function AccountDetailModal({ acc, insights, loadingInsights, onClose, onEdit, onRemove }) {
+  const status = acc.token_status === "expired" ? { color: "var(--danger)", label: "Token expirado", icon: "🔴" }
+    : insights?.account_status === "limited"    ? { color: "var(--danger)",  label: "Limite atingido", icon: "🚫" }
+    : insights?.account_status === "warning"    ? { color: "var(--warning)", label: "Próximo do limite", icon: "⚠️" }
+    : { color: "var(--success)", label: "Ativa", icon: "🟢" };
+
+  return (
+    <div onClick={(e) => e.target === e.currentTarget && onClose()} style={{
+      position: "fixed", inset: 0, zIndex: 2000,
+      background: "rgba(0,0,0,0.75)", backdropFilter: "blur(5px)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+    }}>
+      <div style={{
+        background: "var(--bg2)", border: "1px solid var(--border2)",
+        borderRadius: 18, width: "100%", maxWidth: 480,
+        boxShadow: "0 24px 64px rgba(0,0,0,0.7)", overflow: "hidden",
+      }}>
+        {/* Header com capa gradiente */}
+        <div style={{ height: 72, background: "linear-gradient(135deg, #7c5cfc22, #9b4dfc44)", position: "relative", borderBottom: "1px solid var(--border)" }}>
+          <button onClick={onClose} style={{ position: "absolute", top: 12, right: 14, background: "none", color: "var(--muted)", fontSize: 20, padding: "0 4px", lineHeight: 1 }}>×</button>
+        </div>
+
+        {/* Avatar sobreposto */}
+        <div style={{ padding: "0 20px 0", marginTop: -36 }}>
+          <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
+            <Avatar acc={{ ...acc, account_status: insights?.account_status }} size={72} />
+            <div style={{ display: "flex", gap: 7, paddingBottom: 6 }}>
+              <button className="btn btn-ghost btn-sm" onClick={onEdit}>✏️ Editar perfil</button>
+              <button className="btn btn-danger btn-sm" onClick={onRemove}>Desconectar</button>
+            </div>
+          </div>
+
+          {/* Nome e username */}
+          <div style={{ marginTop: 10, marginBottom: 14 }}>
+            <div style={{ fontWeight: 700, fontSize: 17 }}>{acc.name || acc.username}</div>
+            <div style={{ fontSize: 13, color: "var(--muted)" }}>@{acc.username}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+              <span className="badge badge-purple">{acc.account_type || "BUSINESS"}</span>
+              <span style={{ fontSize: 11, fontWeight: 600, color: status.color, display: "flex", alignItems: "center", gap: 4 }}>
+                {status.icon} {status.label}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ padding: "0 20px 20px" }}>
+
+          {loadingInsights ? (
+            <div style={{ textAlign: "center", padding: "28px 0" }}>
+              <div className="spinner" style={{ width: 22, height: 22, margin: "0 auto 10px" }} />
+              <div style={{ fontSize: 12, color: "var(--muted)" }}>Buscando dados da conta...</div>
+            </div>
+          ) : insights ? (
+            <>
+              {/* Stats */}
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                <StatBox label="Seguidores"  value={fmt(insights.followers_count)} icon="👥" />
+                <StatBox label="Seguindo"    value={fmt(insights.follows_count)}   icon="➡️" />
+                <StatBox label="Posts"       value={fmt(insights.media_count)}      icon="📸" />
+              </div>
+
+              {/* Bio */}
+              {insights.biography && (
+                <div style={{ marginBottom: 12, padding: "10px 12px", background: "var(--bg3)", borderRadius: 8, fontSize: 13, color: "var(--text)", lineHeight: 1.6 }}>
+                  {insights.biography}
+                </div>
+              )}
+
+              {/* Link */}
+              {insights.website && (
+                <a href={insights.website} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--accent-light)", marginBottom: 12, padding: "8px 12px", background: "var(--bg3)", borderRadius: 8 }}>
+                  🔗 {insights.website.replace(/^https?:\/\//, "")}
+                </a>
+              )}
+
+              {/* Detalhes em grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+                {[
+                  { icon: "🗂", label: "Tipo de conta", value: insights.account_type || acc.account_type || "BUSINESS" },
+                  { icon: "🗓", label: "Conectada em", value: new Date(acc.connected_at || Date.now()).toLocaleDateString("pt-BR") },
+                  { icon: "🔄", label: "Dados atualizados", value: insights.fetched_at ? new Date(insights.fetched_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "—" },
+                  { icon: "🆔", label: "Instagram ID", value: acc.id },
+                ].map((item) => (
+                  <div key={item.label} style={{ padding: "9px 11px", background: "var(--bg3)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                    <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 3 }}>{item.icon} {item.label}</div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.value}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Limite de publicação */}
+              {insights.publishing_limit && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                    Limite de publicação (24h)
+                  </div>
+                  <div style={{ background: "var(--bg3)", borderRadius: 8, padding: "10px 12px", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 12 }}>
+                      <span style={{ color: "var(--text)" }}>
+                        {insights.publishing_limit.quota_usage ?? 0} / {insights.publishing_limit.config?.quota_total ?? "—"} posts
+                      </span>
+                      <span style={{ color: "var(--muted)" }}>
+                        {insights.publishing_limit.config?.quota_duration ? `a cada ${insights.publishing_limit.config.quota_duration / 3600}h` : ""}
+                      </span>
+                    </div>
+                    {/* Barra de progresso */}
+                    {insights.publishing_limit.config?.quota_total && (() => {
+                      const pct = Math.min(100, Math.round((insights.publishing_limit.quota_usage || 0) / insights.publishing_limit.config.quota_total * 100));
+                      const color = pct >= 100 ? "var(--danger)" : pct >= 80 ? "var(--warning)" : "var(--success)";
+                      return (
+                        <div style={{ height: 6, background: "var(--bg)", borderRadius: 4, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 4, transition: "width 0.4s ease" }} />
+                        </div>
+                      );
+                    })()}
+                  </div>
+                  {insights.restriction_note && (
+                    <div style={{ marginTop: 8, fontSize: 11, color: insights.account_status === "limited" ? "var(--danger)" : "var(--warning)", padding: "7px 10px", background: insights.account_status === "limited" ? "rgba(239,68,68,0.06)" : "rgba(245,158,11,0.07)", borderRadius: 7, borderLeft: `3px solid ${insights.account_status === "limited" ? "var(--danger)" : "var(--warning)"}` }}>
+                      ⚠️ {insights.restriction_note}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Token status */}
+              <div style={{ padding: "9px 12px", background: "var(--bg3)", borderRadius: 8, border: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 13 }}>🔒</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text)" }}>Token de acesso</div>
+                  <div style={{ fontSize: 10, color: acc.token_status === "expired" ? "var(--danger)" : "var(--success)" }}>
+                    {acc.token_status === "expired" ? "Expirado — reconecte a conta" : "Armazenado com segurança no dispositivo"}
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div style={{ textAlign: "center", padding: "20px 0", color: "var(--muted)", fontSize: 13 }}>
+              Não foi possível carregar os detalhes da conta.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── Modal de edição de perfil ─────────────────────────────────────────────────
 function EditProfileModal({ acc, onClose, onSaved }) {
@@ -41,7 +243,7 @@ function EditProfileModal({ acc, onClose, onSaved }) {
       });
       const data = await res.json();
       if (data.success) {
-        setResult({ type: "success", msg: "Foto atualizada! Pode levar alguns minutos para aparecer." });
+        setResult({ type: "success", msg: "Foto atualizada!" });
         onSaved({ ...acc, profile_picture: photoUrl });
         setPhotoUrl("");
       } else {
@@ -53,50 +255,33 @@ function EditProfileModal({ acc, onClose, onSaved }) {
 
   return (
     <div onClick={(e) => e.target === e.currentTarget && onClose()} style={{
-      position: "fixed", inset: 0, zIndex: 2000,
+      position: "fixed", inset: 0, zIndex: 3000,
       background: "rgba(0,0,0,0.75)", backdropFilter: "blur(5px)",
       display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
     }}>
-      <div style={{
-        background: "var(--bg2)", border: "1px solid var(--border2)",
-        borderRadius: 16, width: "100%", maxWidth: 460,
-        boxShadow: "0 24px 64px rgba(0,0,0,0.7)", overflow: "hidden",
-      }}>
-        {/* Header */}
+      <div style={{ background: "var(--bg2)", border: "1px solid var(--border2)", borderRadius: 16, width: "100%", maxWidth: 460, boxShadow: "0 24px 64px rgba(0,0,0,0.7)", overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ position: "relative", flexShrink: 0 }}>
-            {acc.profile_picture && (
-              <img src={acc.profile_picture} alt="" style={{ width: 36, height: 36, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--border2)", display: "block" }}
-                onError={(e) => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
-            )}
-            <div style={{ width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg,var(--accent),#9b4dfc)", display: acc.profile_picture ? "none" : "flex", alignItems: "center", justifyContent: "center", fontSize: 15, color: "#fff", fontWeight: 700 }}>
-              {(acc.username || "?")[0].toUpperCase()}
-            </div>
-          </div>
+          <Avatar acc={acc} size={36} />
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 700, fontSize: 14 }}>@{acc.username}</div>
             <div style={{ fontSize: 11, color: "var(--muted)" }}>Editar perfil</div>
           </div>
-          <button onClick={onClose} style={{ background: "none", color: "var(--muted)", fontSize: 22, padding: "0 4px", lineHeight: 1 }}>×</button>
+          <button onClick={onClose} style={{ background: "none", color: "var(--muted)", fontSize: 22, padding: "0 4px" }}>×</button>
         </div>
 
-        {/* Tabs */}
         <div style={{ display: "flex", borderBottom: "1px solid var(--border)" }}>
-          {[{ id: "bio", label: "📝 Bio & Link" }, { id: "photo", label: "📷 Foto de perfil" }].map((t) => (
+          {[{ id: "bio", label: "📝 Bio & Link" }, { id: "photo", label: "📷 Foto" }].map((t) => (
             <button key={t.id} onClick={() => { setTab(t.id); setResult(null); }} style={{
               flex: 1, padding: "11px", fontSize: 13,
               fontWeight: tab === t.id ? 600 : 400,
               color: tab === t.id ? "var(--accent-light)" : "var(--muted)",
               background: "none",
               borderBottom: `2px solid ${tab === t.id ? "var(--accent)" : "transparent"}`,
-              transition: "all 0.15s",
             }}>{t.label}</button>
           ))}
         </div>
 
         <div style={{ padding: 20 }}>
-
-          {/* ── Tab Bio & Link ── */}
           {tab === "bio" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div>
@@ -107,13 +292,12 @@ function EditProfileModal({ acc, onClose, onSaved }) {
               <div>
                 <label>Link da bio</label>
                 <input type="url" value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://seusite.com.br" />
-                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>Aparece como link clicável no perfil</div>
               </div>
-              <div style={{ padding: "9px 12px", background: "rgba(245,158,11,0.07)", borderRadius: 8, fontSize: 12, color: "var(--warning)", borderLeft: "3px solid var(--warning)", lineHeight: 1.6 }}>
+              <div style={{ padding: "9px 12px", background: "rgba(245,158,11,0.07)", borderRadius: 8, fontSize: 12, color: "var(--warning)", borderLeft: "3px solid var(--warning)" }}>
                 ⚠️ Requer permissão <strong>instagram_manage_profile</strong> aprovada no App Meta.
               </div>
               {result && (
-                <div style={{ padding: "10px 14px", borderRadius: 8, fontSize: 13, background: result.type === "success" ? "var(--success-bg)" : "rgba(239,68,68,0.08)", color: result.type === "success" ? "var(--success)" : "var(--danger)", border: `1px solid ${result.type === "success" ? "rgba(52,211,153,0.2)" : "rgba(239,68,68,0.2)"}` }}>
+                <div style={{ padding: "10px 14px", borderRadius: 8, fontSize: 13, background: result.type === "success" ? "var(--success-bg)" : "rgba(239,68,68,0.08)", color: result.type === "success" ? "var(--success)" : "var(--danger)" }}>
                   {result.type === "success" ? "✓ " : "✕ "}{result.msg}
                 </div>
               )}
@@ -126,49 +310,34 @@ function EditProfileModal({ acc, onClose, onSaved }) {
             </div>
           )}
 
-          {/* ── Tab Foto ── */}
           {tab === "photo" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {/* Foto atual */}
               <div style={{ display: "flex", alignItems: "center", gap: 14, padding: 14, background: "var(--bg3)", borderRadius: 10 }}>
-                <div style={{ position: "relative" }}>
-                  {acc.profile_picture && (
-                    <img src={acc.profile_picture} alt="" style={{ width: 58, height: 58, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--border2)", display: "block" }}
-                      onError={(e) => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
-                  )}
-                  <div style={{ width: 58, height: 58, borderRadius: "50%", background: "linear-gradient(135deg,var(--accent),#9b4dfc)", display: acc.profile_picture ? "none" : "flex", alignItems: "center", justifyContent: "center", fontSize: 24, color: "#fff", fontWeight: 700 }}>
-                    {(acc.username || "?")[0].toUpperCase()}
-                  </div>
-                </div>
+                <Avatar acc={acc} size={58} />
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 600 }}>Foto atual</div>
                   <div style={{ fontSize: 11, color: "var(--muted)" }}>@{acc.username}</div>
                 </div>
               </div>
-
               <div>
                 <label>URL da nova foto</label>
                 <input type="url" value={photoUrl} onChange={(e) => setPhotoUrl(e.target.value)} placeholder="https://files.catbox.moe/foto.jpg" />
-                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>JPG ou PNG público — Catbox, Imgur, Cloudinary, etc.</div>
+                <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>JPG ou PNG público</div>
               </div>
-
               {photoUrl && (
                 <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", background: "var(--bg3)", borderRadius: 9, border: "1px solid var(--accent)" }}>
                   <img src={photoUrl} alt="preview" style={{ width: 48, height: 48, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--accent)", flexShrink: 0 }} onError={(e) => { e.target.style.opacity = "0.3"; }} />
-                  <div style={{ fontSize: 12, color: "var(--muted)" }}>Prévia da nova foto</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>Prévia</div>
                 </div>
               )}
-
-              <div style={{ padding: "9px 12px", background: "rgba(245,158,11,0.07)", borderRadius: 8, fontSize: 12, color: "var(--warning)", borderLeft: "3px solid var(--warning)", lineHeight: 1.6 }}>
+              <div style={{ padding: "9px 12px", background: "rgba(245,158,11,0.07)", borderRadius: 8, fontSize: 12, color: "var(--warning)", borderLeft: "3px solid var(--warning)" }}>
                 ⚠️ Requer permissão <strong>instagram_manage_profile</strong> aprovada no App Meta.
               </div>
-
               {result && (
-                <div style={{ padding: "10px 14px", borderRadius: 8, fontSize: 13, background: result.type === "success" ? "var(--success-bg)" : "rgba(239,68,68,0.08)", color: result.type === "success" ? "var(--success)" : "var(--danger)", border: `1px solid ${result.type === "success" ? "rgba(52,211,153,0.2)" : "rgba(239,68,68,0.2)"}` }}>
+                <div style={{ padding: "10px 14px", borderRadius: 8, fontSize: 13, background: result.type === "success" ? "var(--success-bg)" : "rgba(239,68,68,0.08)", color: result.type === "success" ? "var(--success)" : "var(--danger)" }}>
                   {result.type === "success" ? "✓ " : "✕ "}{result.msg}
                 </div>
               )}
-
               <div style={{ display: "flex", gap: 10 }}>
                 <button className="btn btn-primary" style={{ flex: 1 }} onClick={savePhoto} disabled={loading || !photoUrl.trim()}>
                   {loading ? <><span className="spinner" /> Atualizando...</> : "Atualizar foto"}
@@ -187,35 +356,43 @@ function EditProfileModal({ acc, onClose, onSaved }) {
 export default function Accounts() {
   const { accounts, removeAccount, clearAllAccounts, loading, reloadAccounts } = useAccounts();
   const [confirmModal, setConfirmModal] = useState(null);
-  const [editingAcc, setEditingAcc]     = useState(null);
+  const [editingAcc,   setEditingAcc]   = useState(null);
+  const [detailAcc,    setDetailAcc]    = useState(null);
+  const [insights,     setInsights]     = useState({});   // { [acc.id]: data }
+  const [loadingIns,   setLoadingIns]   = useState({});   // { [acc.id]: bool }
 
   const APP_ID   = import.meta.env.VITE_META_APP_ID;
   const REDIRECT = encodeURIComponent(window.location.origin + "/api/auth-callback");
   const SCOPE    = "instagram_basic,instagram_content_publish,instagram_manage_insights,pages_read_engagement,pages_show_list,pages_manage_posts,business_management,pages_manage_metadata";
   const oauthUrl = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${APP_ID}&redirect_uri=${REDIRECT}&scope=${SCOPE}&response_type=code`;
 
-  const Avatar = ({ acc, size = 52 }) => {
-    const initials = (acc.username || "?")[0].toUpperCase();
-    const gradients = [
-      "linear-gradient(135deg, #7c5cfc, #e040fb)",
-      "linear-gradient(135deg, #f59e0b, #ef4444)",
-      "linear-gradient(135deg, #22c55e, #38bdf8)",
-      "linear-gradient(135deg, #f97316, #ec4899)",
-    ];
-    const grad = gradients[acc.username?.charCodeAt(0) % gradients.length] || gradients[0];
-    return (
-      <div style={{ position: "relative", flexShrink: 0 }}>
-        {acc.profile_picture && (
-          <img src={acc.profile_picture} alt={acc.username}
-            style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--border2)", display: "block" }}
-            onError={(e) => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }} />
-        )}
-        <div style={{ width: size, height: size, borderRadius: "50%", background: grad, display: acc.profile_picture ? "none" : "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.38, fontWeight: 700, color: "#fff", border: "2px solid var(--border2)" }}>
-          {initials}
-        </div>
-        <div style={{ position: "absolute", bottom: 1, right: 1, width: 12, height: 12, borderRadius: "50%", background: "var(--success)", border: "2px solid var(--bg2)" }} />
-      </div>
-    );
+  // Busca insights de uma conta e cacheia no state
+  const fetchInsights = useCallback(async (acc) => {
+    if (loadingIns[acc.id] || insights[acc.id]) return; // já carregado ou carregando
+    setLoadingIns((p) => ({ ...p, [acc.id]: true }));
+    try {
+      const res  = await fetch("/api/account-insights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instagram_id: acc.id, access_token: acc.access_token }),
+      });
+      const data = await res.json();
+      if (res.status === 401) {
+        // Token expirado — persiste flag
+        await dbPut("sessions", { ...acc, token_status: "expired" });
+        reloadAccounts();
+      }
+      setInsights((p) => ({ ...p, [acc.id]: data.error ? null : data }));
+    } catch {
+      setInsights((p) => ({ ...p, [acc.id]: null }));
+    }
+    setLoadingIns((p) => ({ ...p, [acc.id]: false }));
+  }, [insights, loadingIns, reloadAccounts]);
+
+  // Abre modal de detalhes e dispara fetch
+  const openDetail = (acc) => {
+    setDetailAcc(acc);
+    fetchInsights(acc);
   };
 
   const handleConfirm = async () => {
@@ -223,12 +400,11 @@ export default function Accounts() {
     if (confirmModal.type === "remove") await removeAccount(confirmModal.id);
     if (confirmModal.type === "clear")  await clearAllAccounts();
     setConfirmModal(null);
+    setDetailAcc(null);
   };
 
-  const handleSaved = (updated) => {
-    // Atualiza a conta no IndexedDB via reloadAccounts (useAccounts já persiste)
-    const { dbPut } = require?.("../useDB.js") || {};
-    // Força reload das contas do IndexedDB
+  const handleSaved = async (updated) => {
+    await dbPut("sessions", updated);
     reloadAccounts();
     setEditingAcc(null);
   };
@@ -256,7 +432,19 @@ export default function Accounts() {
         </div>
       </div>
 
-      {/* Modal de edição */}
+      {/* Modal detalhes */}
+      {detailAcc && (
+        <AccountDetailModal
+          acc={detailAcc}
+          insights={insights[detailAcc.id]}
+          loadingInsights={!!loadingIns[detailAcc.id]}
+          onClose={() => setDetailAcc(null)}
+          onEdit={() => { setEditingAcc(detailAcc); setDetailAcc(null); }}
+          onRemove={() => { setConfirmModal({ type: "remove", id: detailAcc.id, username: detailAcc.username }); setDetailAcc(null); }}
+        />
+      )}
+
+      {/* Modal edição */}
       {editingAcc && (
         <EditProfileModal
           acc={editingAcc}
@@ -275,56 +463,93 @@ export default function Accounts() {
       ) : (
         <>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
-            {accounts.map((acc) => (
-              <div key={acc.id} className="card card-hover" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
-                  <Avatar acc={acc} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>@{acc.username || "—"}</div>
-                    <span className="badge badge-purple" style={{ marginTop: 4 }}>{acc.account_type || "BUSINESS"}</span>
+            {accounts.map((acc) => {
+              const ins = insights[acc.id];
+              const isLoading = !!loadingIns[acc.id];
+              const statusColor = acc.token_status === "expired" ? "var(--danger)"
+                : ins?.account_status === "limited" ? "var(--danger)"
+                : ins?.account_status === "warning" ? "var(--warning)"
+                : "var(--success)";
+              const statusLabel = acc.token_status === "expired" ? "Token expirado"
+                : ins?.account_status === "limited" ? "Limitada"
+                : ins?.account_status === "warning" ? "Atenção"
+                : "Ativa";
+
+              return (
+                <div key={acc.id} className="card card-hover"
+                  style={{ display: "flex", flexDirection: "column", gap: 12, cursor: "pointer" }}
+                  onClick={() => openDetail(acc)}
+                >
+                  {/* Header do card */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <Avatar acc={{ ...acc, account_status: ins?.account_status }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {acc.name || acc.username}
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        @{acc.username}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 4, flexWrap: "wrap" }}>
+                        <span className="badge badge-purple" style={{ fontSize: 10 }}>{acc.account_type || "BUSINESS"}</span>
+                        <span style={{ fontSize: 10, fontWeight: 600, color: statusColor }}>● {statusLabel}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Stats (aparecem após carregar) */}
+                  {isLoading && (
+                    <div style={{ display: "flex", justifyContent: "center", padding: "6px 0" }}>
+                      <div className="spinner" style={{ width: 16, height: 16 }} />
+                    </div>
+                  )}
+                  {ins && !isLoading && (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {[
+                        { v: fmt(ins.followers_count), l: "Seguidores" },
+                        { v: fmt(ins.follows_count),   l: "Seguindo" },
+                        { v: fmt(ins.media_count),      l: "Posts" },
+                      ].map((s) => (
+                        <div key={s.l} style={{ flex: 1, textAlign: "center", padding: "7px 4px", background: "var(--bg3)", borderRadius: 7, border: "1px solid var(--border)" }}>
+                          <div style={{ fontSize: 13, fontWeight: 700 }}>{s.v}</div>
+                          <div style={{ fontSize: 9, color: "var(--muted)", marginTop: 1 }}>{s.l}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {!ins && !isLoading && (
+                    <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", padding: "4px 0" }}>
+                      Clique para ver detalhes
+                    </div>
+                  )}
+
+                  {/* Barra de limite de publicação se tiver */}
+                  {ins?.publishing_limit?.config?.quota_total && (() => {
+                    const pct = Math.min(100, Math.round((ins.publishing_limit.quota_usage || 0) / ins.publishing_limit.config.quota_total * 100));
+                    const color = pct >= 100 ? "var(--danger)" : pct >= 80 ? "var(--warning)" : "var(--success)";
+                    return (
+                      <div>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--muted)", marginBottom: 4 }}>
+                          <span>Posts hoje</span>
+                          <span style={{ color }}>{ins.publishing_limit.quota_usage}/{ins.publishing_limit.config.quota_total}</span>
+                        </div>
+                        <div style={{ height: 4, background: "var(--bg3)", borderRadius: 4, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 4 }} />
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: "auto" }}>
+                    🗓 Conectada em {new Date(acc.connected_at || Date.now()).toLocaleDateString("pt-BR")}
                   </div>
                 </div>
-
-                {/* Bio e link se existirem */}
-                {acc.biography && (
-                  <div style={{ fontSize: 12, color: "var(--text2)", lineHeight: 1.55, wordBreak: "break-word" }}>
-                    {acc.biography}
-                  </div>
-                )}
-                {acc.website && (
-                  <a href={acc.website} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "var(--accent-light)", display: "flex", alignItems: "center", gap: 5 }}>
-                    🔗 {acc.website.replace(/^https?:\/\//, "")}
-                  </a>
-                )}
-
-                <div style={{ fontSize: 12, color: "var(--muted)", display: "flex", flexDirection: "column", gap: 4 }}>
-                  <div>🗓 Conectada em {new Date(acc.connected_at || Date.now()).toLocaleDateString("pt-BR")}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                    🔒 Token: <span className="badge badge-success" style={{ fontSize: 10 }}>Armazenado com segurança</span>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: 8, marginTop: "auto" }}>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    style={{ flex: 1 }}
-                    onClick={() => setEditingAcc(acc)}
-                  >
-                    ✏️ Editar perfil
-                  </button>
-                  <button
-                    className="btn btn-danger btn-sm"
-                    onClick={() => setConfirmModal({ type: "remove", id: acc.id, username: acc.username })}
-                  >
-                    Desconectar
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div style={{ marginTop: 20, padding: "12px 16px", background: "var(--bg2)", borderRadius: 10, border: "1px solid var(--border)", fontSize: 12, color: "var(--muted)" }}>
-            💡 Foto não aparecendo? As URLs de foto da Meta expiram. Reconecte a conta para atualizar.
+            💡 Clique em qualquer conta para ver detalhes completos — seguidores, limite de posts, status e mais.
           </div>
         </>
       )}
@@ -332,11 +557,9 @@ export default function Accounts() {
       <Modal
         open={!!confirmModal}
         title={confirmModal?.type === "clear" ? "Remover todas as contas?" : `Desconectar @${confirmModal?.username}?`}
-        message={
-          confirmModal?.type === "clear"
-            ? "Todas as contas e tokens serão removidos do dispositivo. Você precisará reconectar."
-            : "A conta será removida do Insta Manager. Você poderá reconectá-la quando quiser."
-        }
+        message={confirmModal?.type === "clear"
+          ? "Todas as contas e tokens serão removidos do dispositivo."
+          : "A conta será removida do Insta Manager. Você poderá reconectá-la quando quiser."}
         confirmLabel={confirmModal?.type === "clear" ? "Remover todas" : "Desconectar"}
         confirmDanger
         onConfirm={handleConfirm}
