@@ -1,6 +1,4 @@
-// CatboxUploader.jsx — upload DIRETO do browser para catbox.moe (sem proxy)
-// O proxy via Netlify Functions falha porque o Catbox bloqueia IPs de datacenter (ETIMEDOUT).
-// O Catbox aceita uploads diretos do browser via FormData com CORS habilitado.
+// CatboxUploader.jsx — upload via proxy Netlify (catbox.moe bloqueia CORS direto do browser)
 import { useState, useRef, useCallback } from "react";
 
 function formatSize(bytes) {
@@ -13,42 +11,43 @@ function isVideo(name) {
   return ["mp4", "mov", "avi", "mkv", "webm"].includes(name.split(".").pop().toLowerCase());
 }
 
-// Upload direto do browser para catbox.moe via FormData
-async function uploadToCatbox(file, onProgress) {
-  onProgress(10);
-
-  const formData = new FormData();
-  formData.append("reqtype", "fileupload");
-  formData.append("fileToUpload", file, file.name);
-
+function readAsBase64(file, onProgress) {
   return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const pct = Math.round((e.loaded / e.total) * 80) + 10; // 10–90%
-        onProgress(pct);
-      }
+    const reader = new FileReader();
+    reader.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 50));
     };
-
-    xhr.onload = () => {
-      onProgress(95);
-      const text = xhr.responseText?.trim();
-      if (xhr.status === 200 && text?.startsWith("https://")) {
-        onProgress(100);
-        resolve(text);
-      } else {
-        reject(new Error(`Catbox erro ${xhr.status}: ${text || "resposta vazia"}`));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error("Erro de rede ao conectar com Catbox"));
-    xhr.ontimeout = () => reject(new Error("Timeout ao conectar com Catbox (60s)"));
-    xhr.timeout = 60000;
-
-    xhr.open("POST", "https://catbox.moe/user/api.php");
-    xhr.send(formData);
+    reader.onload  = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = () => reject(new Error("Falha ao ler arquivo"));
+    reader.readAsDataURL(file);
   });
+}
+
+// Netlify Functions tem limite de 6MB de body — base64 aumenta ~33%
+// Limite seguro por chunk: ~4MB de arquivo original
+const MAX_DIRECT_BYTES = 4 * 1024 * 1024;
+
+async function uploadToCatbox(file, onProgress) {
+  onProgress(5);
+
+  if (file.size > MAX_DIRECT_BYTES) {
+    throw new Error(`Arquivo muito grande (máx 4MB via proxy). Tamanho: ${formatSize(file.size)}`);
+  }
+
+  const fileBase64 = await readAsBase64(file, onProgress); // 0-50%
+  onProgress(55);
+
+  const res = await fetch("/api/catbox-proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fileBase64, fileName: file.name, mimeType: file.type || "application/octet-stream" }),
+  });
+
+  onProgress(90);
+  const data = await res.json();
+  if (!res.ok || !data.url) throw new Error(data.error || `Erro ${res.status}`);
+  onProgress(100);
+  return data.url;
 }
 
 export default function CatboxUploader({ onUrlsReady }) {
@@ -107,7 +106,7 @@ export default function CatboxUploader({ onUrlsReady }) {
   };
 
   const getProgressLabel = (f) => {
-    if (f.progress < 20) return "Iniciando...";
+    if (f.progress < 50) return "Lendo arquivo...";
     if (f.progress < 90) return `Enviando... ${f.progress}%`;
     return "Finalizando...";
   };
@@ -134,7 +133,7 @@ export default function CatboxUploader({ onUrlsReady }) {
           {dragging ? "Solte para adicionar" : "Arraste arquivos ou clique para selecionar"}
         </div>
         <div style={{ fontSize: 12, color: "var(--muted)" }}>
-          Imagens (jpg, png, webp) · Vídeos (mp4, mov, webm)
+          Imagens (jpg, png, webp) · Vídeos (mp4, mov, webm) · Máx 4MB por arquivo
         </div>
         <input ref={inputRef} type="file" multiple accept="image/*,video/*"
           style={{ display: "none" }}
