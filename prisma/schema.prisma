@@ -1,0 +1,105 @@
+// =============================================================================
+// PRISMA SCHEMA — Rate Limit + Warm-up
+// Adicione estas tabelas ao seu schema existente.
+// Não altera nenhuma tabela que já exista.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // Use Supabase, PlanetScale, Neon, Railway ou qualquer Postgres/MySQL
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. WARMUP_STATE
+//    Uma linha por conta. Criada automaticamente ao conectar conta nova.
+//    Nunca deletada — apenas resetada ao reconectar.
+// ─────────────────────────────────────────────────────────────────────────────
+model WarmupState {
+  id          String   @id                   // = instagram_id da conta
+  stage       Int      @default(1)           // 1..5 (ver WARMUP_STAGES)
+  startedAt   DateTime @default(now())       // quando o warmup começou
+  dayInStage  Int      @default(0)           // dias completos no estágio atual
+  lastPostAt  DateTime?                      // última postagem desta conta
+  postsToday  Int      @default(0)           // posts feitos hoje (reseta meia-noite UTC)
+  postsHour   Int      @default(0)           // posts na hora atual (reseta a cada hora)
+  currentHour Int      @default(-1)          // hora do último reset de postsHour
+  dateKey     String   @default("")          // "YYYY-MM-DD" do último reset de postsToday
+  graduated   Boolean  @default(false)       // true = saiu do warmup, limite pleno ativo
+  graduatedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  logs PostingLog[]
+
+  @@map("warmup_state")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. POSTING_LIMITS
+//    Limites globais e por conta. Um registro "global" + overrides por conta.
+// ─────────────────────────────────────────────────────────────────────────────
+model PostingLimits {
+  id              String @id @default(cuid())
+  accountId       String @unique              // "global" ou instagram_id
+  maxPerDay       Int    @default(50)         // sua config atual: 50/dia
+  maxPerHour      Int    @default(4)          // sua config atual: 4/hora
+  minDelayMinutes Int    @default(10)         // sua config atual: delay 10-18 min
+  maxDelayMinutes Int    @default(18)
+  // Limites de segurança anti-shadowban (aplicados sobre os limites do warmup)
+  safetyMargin    Float  @default(0.85)       // usa só 85% do limite máximo
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("posting_limits")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. POSTING_LOG
+//    Auditoria completa de cada tentativa de publicação.
+// ─────────────────────────────────────────────────────────────────────────────
+model PostingLog {
+  id          String   @id @default(cuid())
+  accountId   String
+  mediaUrl    String
+  mediaType   String                          // IMAGE | VIDEO
+  postType    String                          // FEED | REEL | STORY
+  caption     String?
+  success     Boolean
+  errorMsg    String?
+  mediaId     String?                         // id retornado pela Meta em caso de sucesso
+  warmupStage Int                             // estágio do warmup no momento da postagem
+  quotaUsage  Int?                            // % de quota usado (da Meta API)
+  delayMs     Int?                            // delay aplicado antes de postar (ms)
+  attemptedAt DateTime @default(now())
+  publishedAt DateTime?
+
+  account WarmupState @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@index([accountId, attemptedAt])
+  @@index([attemptedAt])
+  @@map("posting_log")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. RATE_LIMIT_EVENT
+//    Registra quando a Meta devolveu erro de rate limit (código 32/4/613).
+//    Usado para back-off automático por conta.
+// ─────────────────────────────────────────────────────────────────────────────
+model RateLimitEvent {
+  id          String   @id @default(cuid())
+  accountId   String
+  errorCode   Int
+  errorMsg    String
+  backoffUntil DateTime                       // não postar até este timestamp
+  resolvedAt  DateTime?                       // null = ainda em back-off
+  occurredAt  DateTime @default(now())
+
+  @@index([accountId, resolvedAt])
+  @@map("rate_limit_event")
+}
