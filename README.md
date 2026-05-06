@@ -1,14 +1,30 @@
-# Insta Manager
+# Insta Manager v3
 
-Gerenciador de múltiplas contas do Instagram via Meta Graph API.  
-Publica em várias contas de uma só vez, com delay configurável e histórico local.
+Gerenciador de múltiplas contas do Instagram via Meta Graph API v21.  
+Publica em várias contas de uma vez, com agendamento, delay configurável e histórico local.
+
+## O que há de novo na v3
+
+- **Tokens armazenados no IndexedDB** (mais seguro que localStorage)
+- **Graph API v21.0** (versão atual)
+- **Layout responsivo mobile** com menu drawer
+- **Validação de URL de mídia** antes de publicar (com preview automático)
+- **Modal de confirmação** substituindo `confirm()` nativo
+- **Edição de agendamentos** sem precisar deletar e recriar
+- **Fuso horário explícito** nos agendamentos
+- **Filtros e busca** no histórico (por tipo, status, legenda/conta)
+- **Histórico expansível** com detalhes completos ao clicar
+- **Aviso de truncamento** quando o histórico passa de 500 entradas
+- **Conexão IndexedDB cacheada** (melhoria de performance)
+- **`useRef` correto** no scheduler (evita disparos duplicados)
+- **Tokens de página de longa duração** no auth-callback
 
 ## Stack
 
 - **Frontend:** React + Vite (deploy no Netlify)
 - **Backend:** Netlify Functions (serverless, Node.js)
 - **Auth:** OAuth 2.0 com Meta/Facebook
-- **Storage:** localStorage (contas e histórico ficam no navegador)
+- **Storage:** IndexedDB (contas + tokens + histórico + fila)
 
 ---
 
@@ -40,13 +56,13 @@ Publica em várias contas de uma só vez, com delay configurável e histórico l
 
 ## Passo 2 — Deploy no Netlify
 
-### Opção A — via GitHub (recomendado)
+### Via GitHub (recomendado)
 
 1. Suba o projeto para um repositório no GitHub
 2. Netlify → **Add new site → Import an existing project → GitHub**
 3. Selecione o repositório (o `netlify.toml` já configura tudo)
 
-### Opção B — via CLI
+### Via CLI
 
 ```bash
 npm install -g netlify-cli
@@ -87,39 +103,29 @@ Acesse: `http://localhost:8888`
 
 ---
 
-## Como usar
-
-### Conectar contas
-1. Clique em **"+ Conectar conta"** na barra lateral
-2. Autorize no Facebook
-3. As contas Instagram vinculadas às páginas são salvas automaticamente
-
-### Publicar posts
-1. Vá em **"Novo post"**
-2. Escolha o tipo: **Feed, Reel ou Story**
-3. Cole a URL pública da mídia (Catbox, Cloudinary, S3, etc.)
-4. Escreva a legenda (pode personalizar por conta)
-5. Configure o delay entre postagens se quiser
-6. Clique em **"Publicar"**
-
----
-
 ## Estrutura do projeto
 
 ```
 insta-manager/
 ├── netlify/
 │   └── functions/
-│       ├── auth-callback.js   ← OAuth com a Meta
-│       └── publish.js         ← Publicação em múltiplas contas
+│       ├── auth-callback.mjs  ← OAuth com a Meta (v21)
+│       └── publish.mjs        ← Publicação em múltiplas contas (v21)
 ├── src/
 │   ├── pages/
-│   │   ├── Accounts.jsx       ← Tela de contas conectadas
+│   │   ├── Accounts.jsx       ← Contas conectadas
 │   │   ├── NewPost.jsx        ← Criar e publicar post
-│   │   └── History.jsx        ← Histórico de publicações
+│   │   ├── Schedule.jsx       ← Agendamentos com edição
+│   │   └── History.jsx        ← Histórico com filtros
 │   ├── App.jsx                ← Layout, rotas, state global
+│   ├── Modal.jsx              ← Modal reutilizável
+│   ├── MediaPreview.jsx       ← Preview + validação de URL
+│   ├── useAccounts.js         ← Hook de contas (IndexedDB)
+│   ├── useDB.js               ← IndexedDB cacheado
 │   ├── main.jsx
 │   └── index.css
+├── public/
+│   └── sw.js                  ← Service Worker
 ├── index.html
 ├── vite.config.js
 ├── netlify.toml
@@ -128,9 +134,17 @@ insta-manager/
 
 ---
 
+## Notas de segurança
+
+- **Tokens de acesso** ficam no IndexedDB, não no localStorage
+- O `META_APP_SECRET` **nunca** vai para o frontend — fica só nas Netlify Functions
+- Tokens de página são trocados por versões de longa duração no auth-callback
+
+---
+
 ## Observações
 
 - **URL da mídia:** A Meta API exige URLs públicas. Use [Catbox](https://catbox.moe), [Cloudinary](https://cloudinary.com), S3, etc.
 - **Tipos de conta:** Apenas contas **Business** ou **Creator** têm acesso à API de publicação.
 - **Reels/vídeos:** O processamento pode demorar até 2 minutos. O sistema aguarda automaticamente.
-- **Tokens:** Tokens de página do Facebook têm duração longa. Se uma conta parar de funcionar, reconecte pelo botão na sidebar.
+- **Agendamentos:** O scheduler roda no navegador a cada 10s. Se fechar a aba, o Service Worker tenta continuar (suporte limitado por browser).
