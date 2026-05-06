@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useAccounts } from "../App.jsx";
 import { dbPut } from "../useDB.js";
 import Modal from "../Modal.jsx";
@@ -367,8 +367,8 @@ export default function Accounts() {
   const oauthUrl = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${APP_ID}&redirect_uri=${REDIRECT}&scope=${SCOPE}&response_type=code`;
 
   // Busca insights de uma conta e cacheia no state
-  const fetchInsights = useCallback(async (acc) => {
-    if (loadingIns[acc.id] || insights[acc.id]) return; // já carregado ou carregando
+  const fetchInsights = useCallback(async (acc, force = false) => {
+    if (!force && (loadingIns[acc.id] || insights[acc.id])) return;
     setLoadingIns((p) => ({ ...p, [acc.id]: true }));
     try {
       const res  = await fetch("/api/account-insights", {
@@ -378,7 +378,6 @@ export default function Accounts() {
       });
       const data = await res.json();
       if (res.status === 401) {
-        // Token expirado — persiste flag
         await dbPut("sessions", { ...acc, token_status: "expired" });
         reloadAccounts();
       }
@@ -389,10 +388,22 @@ export default function Accounts() {
     setLoadingIns((p) => ({ ...p, [acc.id]: false }));
   }, [insights, loadingIns, reloadAccounts]);
 
-  // Abre modal de detalhes e dispara fetch
+  // ✅ Busca insights de todas as contas automaticamente ao carregar
+  const fetchedRef = useRef(false);
+  useEffect(() => {
+    if (fetchedRef.current || loading || accounts.length === 0) return;
+    fetchedRef.current = true;
+    // Busca em sequência com pequeno delay para não sobrecarregar a API
+    accounts.forEach((acc, i) => {
+      setTimeout(() => fetchInsights(acc), i * 300);
+    });
+  }, [accounts, loading]);
+
+  // Abre modal de detalhes (insights já devem estar carregados)
   const openDetail = (acc) => {
     setDetailAcc(acc);
-    fetchInsights(acc);
+    // Se por algum motivo não carregou ainda, busca agora
+    if (!insights[acc.id] && !loadingIns[acc.id]) fetchInsights(acc);
   };
 
   const handleConfirm = async () => {
@@ -480,15 +491,15 @@ export default function Accounts() {
                   style={{ display: "flex", flexDirection: "column", gap: 12, cursor: "pointer" }}
                   onClick={() => openDetail(acc)}
                 >
-                  {/* Header do card */}
+                  {/* Header do card — dados do IndexedDB, sempre disponíveis */}
                   <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                     <Avatar acc={{ ...acc, account_status: ins?.account_status }} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {acc.name || acc.username}
+                        {ins?.name || acc.name || acc.username || "—"}
                       </div>
                       <div style={{ fontSize: 12, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        @{acc.username}
+                        @{ins?.username || acc.username || "—"}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 4, flexWrap: "wrap" }}>
                         <span className="badge badge-purple" style={{ fontSize: 10 }}>{acc.account_type || "BUSINESS"}</span>
@@ -497,10 +508,15 @@ export default function Accounts() {
                     </div>
                   </div>
 
-                  {/* Stats (aparecem após carregar) */}
+                  {/* Stats — skeleton enquanto carrega, dados reais depois */}
                   {isLoading && (
-                    <div style={{ display: "flex", justifyContent: "center", padding: "6px 0" }}>
-                      <div className="spinner" style={{ width: 16, height: 16 }} />
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {["Seguidores", "Seguindo", "Posts"].map((l) => (
+                        <div key={l} style={{ flex: 1, textAlign: "center", padding: "7px 4px", background: "var(--bg3)", borderRadius: 7, border: "1px solid var(--border)" }}>
+                          <div style={{ height: 16, width: "60%", background: "var(--border)", borderRadius: 4, margin: "0 auto 4px", animation: "pulse 1.2s ease infinite" }} />
+                          <div style={{ fontSize: 9, color: "var(--muted)" }}>{l}</div>
+                        </div>
+                      ))}
                     </div>
                   )}
                   {ins && !isLoading && (
@@ -518,8 +534,8 @@ export default function Accounts() {
                     </div>
                   )}
                   {!ins && !isLoading && (
-                    <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", padding: "4px 0" }}>
-                      Clique para ver detalhes
+                    <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", padding: "2px 0" }}>
+                      ↻ Carregando dados...
                     </div>
                   )}
 
