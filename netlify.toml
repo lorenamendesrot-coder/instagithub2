@@ -20,3 +20,11 @@
 
 [functions]
   node_bundler = "esbuild"
+
+[functions.catbox-proxy]
+  included_files = []
+
+[[headers]]
+  for = "/.netlify/functions/catbox-proxy"
+  [headers.values]
+    Access-Control-Allow-Origin = "*"
