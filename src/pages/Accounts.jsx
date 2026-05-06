@@ -1,11 +1,15 @@
+import { useState } from "react";
 import { useAccounts } from "../App.jsx";
+import Modal from "../Modal.jsx";
 
 export default function Accounts() {
-  const { accounts, removeAccount } = useAccounts();
-  const APP_ID  = import.meta.env.VITE_META_APP_ID;
+  const { accounts, removeAccount, clearAllAccounts, loading } = useAccounts();
+  const [confirmModal, setConfirmModal] = useState(null); // { type: 'remove'|'clear', id?, username? }
+
+  const APP_ID   = import.meta.env.VITE_META_APP_ID;
   const REDIRECT = encodeURIComponent(window.location.origin + "/api/auth-callback");
-  const SCOPE   = "instagram_basic,instagram_content_publish,pages_read_engagement,pages_show_list,business_management";
-  const oauthUrl = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${APP_ID}&redirect_uri=${REDIRECT}&scope=${SCOPE}&response_type=code`;
+  const SCOPE    = "instagram_basic,instagram_content_publish,pages_read_engagement,pages_show_list,business_management";
+  const oauthUrl = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${APP_ID}&redirect_uri=${REDIRECT}&scope=${SCOPE}&response_type=code`;
 
   const Avatar = ({ acc, size = 52 }) => {
     const initials = (acc.username || "?")[0].toUpperCase();
@@ -20,8 +24,7 @@ export default function Accounts() {
       <div style={{ position: "relative", flexShrink: 0 }}>
         {acc.profile_picture && (
           <img
-            src={acc.profile_picture}
-            alt={acc.username}
+            src={acc.profile_picture} alt={acc.username}
             style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", border: "2px solid var(--border2)", display: "block" }}
             onError={(e) => { e.target.style.display = "none"; e.target.nextSibling.style.display = "flex"; }}
           />
@@ -38,6 +41,19 @@ export default function Accounts() {
     );
   };
 
+  const handleConfirm = async () => {
+    if (!confirmModal) return;
+    if (confirmModal.type === "remove") await removeAccount(confirmModal.id);
+    if (confirmModal.type === "clear") await clearAllAccounts();
+    setConfirmModal(null);
+  };
+
+  if (loading) return (
+    <div className="page" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 300 }}>
+      <div className="spinner" style={{ width: 28, height: 28 }} />
+    </div>
+  );
+
   return (
     <div className="page">
       <div className="page-header">
@@ -45,7 +61,14 @@ export default function Accounts() {
           <div className="page-title">Contas conectadas</div>
           <div className="page-subtitle">{accounts.length} conta(s) vinculada(s) via Meta API</div>
         </div>
-        <a href={oauthUrl} className="btn btn-primary">+ Adicionar conta</a>
+        <div style={{ display: "flex", gap: 8 }}>
+          {accounts.length > 0 && (
+            <button className="btn btn-danger btn-sm" onClick={() => setConfirmModal({ type: "clear" })}>
+              Remover todas
+            </button>
+          )}
+          <a href={oauthUrl} className="btn btn-primary">+ Adicionar conta</a>
+        </div>
       </div>
 
       {accounts.length === 0 ? (
@@ -70,19 +93,39 @@ export default function Accounts() {
                 <div style={{ fontSize: 12, color: "var(--muted)", display: "flex", flexDirection: "column", gap: 5 }}>
                   <div>🗓 Conectada em {new Date(acc.connected_at || Date.now()).toLocaleDateString("pt-BR")}</div>
                   <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>🔑 ID: {acc.id}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                    🔒 Token: <span className="badge badge-success" style={{ fontSize: 10 }}>Armazenado com segurança</span>
+                  </div>
                 </div>
-                <button className="btn btn-danger btn-sm" style={{ marginTop: "auto" }}
-                  onClick={() => { if (confirm(`Remover @${acc.username}?`)) removeAccount(acc.id); }}>
+                <button
+                  className="btn btn-danger btn-sm" style={{ marginTop: "auto" }}
+                  onClick={() => setConfirmModal({ type: "remove", id: acc.id, username: acc.username })}
+                >
                   Desconectar
                 </button>
               </div>
             ))}
           </div>
           <div style={{ marginTop: 20, padding: "12px 16px", background: "var(--bg2)", borderRadius: 10, border: "1px solid var(--border)", fontSize: 12, color: "var(--muted)" }}>
-            💡 Foto não aparecendo? As URLs de foto da Meta expiram. Reconecte a conta para atualizar.
+            💡 Foto não aparecendo? As URLs de foto da Meta expiram. Reconecte a conta para atualizar. Os tokens são armazenados no IndexedDB do navegador — mais seguro que localStorage.
           </div>
         </>
       )}
+
+      {/* Modal de confirmação */}
+      <Modal
+        open={!!confirmModal}
+        title={confirmModal?.type === "clear" ? "Remover todas as contas?" : `Desconectar @${confirmModal?.username}?`}
+        message={
+          confirmModal?.type === "clear"
+            ? "Todas as contas e tokens serão removidos do dispositivo. Você precisará reconectar."
+            : "A conta será removida do Insta Manager. Você poderá reconectá-la quando quiser."
+        }
+        confirmLabel={confirmModal?.type === "clear" ? "Remover todas" : "Desconectar"}
+        confirmDanger
+        onConfirm={handleConfirm}
+        onCancel={() => setConfirmModal(null)}
+      />
     </div>
   );
 }

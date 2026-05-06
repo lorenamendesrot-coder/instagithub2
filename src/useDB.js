@@ -1,18 +1,30 @@
-// useDB.js — acesso ao IndexedDB compartilhado com o Service Worker
+// useDB.js — IndexedDB com conexão cacheada (não reabre a cada operação)
+
+let _db = null;
 
 function openDB() {
+  if (_db) return Promise.resolve(_db);
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open("insta_manager", 3);
+    const req = indexedDB.open("insta_manager", 4);
     req.onupgradeneeded = (e) => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains("queue")) {
         db.createObjectStore("queue", { keyPath: "id" });
       }
       if (!db.objectStoreNames.contains("history")) {
-        db.createObjectStore("history", { keyPath: "id" });
+        const hs = db.createObjectStore("history", { keyPath: "id" });
+        try { hs.createIndex("created_at", "created_at", { unique: false }); } catch(_){}
+      }
+      if (!db.objectStoreNames.contains("sessions")) {
+        db.createObjectStore("sessions", { keyPath: "id" });
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      _db = req.result;
+      _db.onclose = () => { _db = null; };
+      _db.onerror = () => { _db = null; };
+      resolve(_db);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -23,6 +35,16 @@ export async function dbGetAll(store) {
     const tx = db.transaction(store, "readonly");
     const req = tx.objectStore(store).getAll();
     req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function dbGet(store, key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).get(key);
+    req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
@@ -65,5 +87,15 @@ export async function dbClear(store) {
     tx.objectStore(store).clear();
     tx.oncomplete = resolve;
     tx.onerror = reject;
+  });
+}
+
+export async function dbCount(store) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, "readonly");
+    const req = tx.objectStore(store).count();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
   });
 }
