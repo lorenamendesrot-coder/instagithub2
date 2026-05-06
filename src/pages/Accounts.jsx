@@ -366,22 +366,64 @@ export default function Accounts() {
   const SCOPE    = "instagram_basic,instagram_content_publish,instagram_manage_insights,pages_read_engagement,pages_show_list,pages_manage_posts,business_management,pages_manage_metadata";
   const oauthUrl = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${APP_ID}&redirect_uri=${REDIRECT}&scope=${SCOPE}&response_type=code`;
 
-  // Busca insights de uma conta e cacheia no state
+  // Busca insights — tenta a Netlify Function, com fallback direto à Graph API
   const fetchInsights = useCallback(async (acc, force = false) => {
     if (!force && (loadingIns[acc.id] || insights[acc.id])) return;
+    if (!acc.access_token) return; // token ainda não carregou
     setLoadingIns((p) => ({ ...p, [acc.id]: true }));
     try {
-      const res  = await fetch("/api/account-insights", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ instagram_id: acc.id, access_token: acc.access_token }),
-      });
-      const data = await res.json();
-      if (res.status === 401) {
-        await dbPut("sessions", { ...acc, token_status: "expired" });
-        reloadAccounts();
+      // Tenta via Netlify Function primeiro
+      let data = null;
+      try {
+        const res = await fetch("/api/account-insights", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ instagram_id: acc.id, access_token: acc.access_token }),
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (!json.error) data = json;
+        }
+        if (res.status === 401) {
+          await dbPut("sessions", { ...acc, token_status: "expired" });
+          reloadAccounts();
+        }
+      } catch { /* fallback abaixo */ }
+
+      // Fallback: chama Graph API diretamente do browser
+      if (!data) {
+        const GRAPH = "https://graph.facebook.com/v21.0";
+        const fields = "id,username,name,biography,website,profile_picture_url,account_type,followers_count,follows_count,media_count";
+        const res = await fetch(`${GRAPH}/${acc.id}?fields=${fields}&access_token=${acc.access_token}`);
+        const json = await res.json();
+        if (!json.error) {
+          data = {
+            id:               json.id,
+            username:         json.username,
+            name:             json.name,
+            biography:        json.biography || "",
+            website:          json.website || "",
+            profile_picture:  json.profile_picture_url || "",
+            account_type:     json.account_type,
+            followers_count:  json.followers_count ?? null,
+            follows_count:    json.follows_count ?? null,
+            media_count:      json.media_count ?? null,
+            account_status:   "active",
+            restriction_note: null,
+            fetched_at:       new Date().toISOString(),
+          };
+          // Persiste username/name/foto atualizados no IndexedDB
+          if (json.username && json.username !== acc.username) {
+            await dbPut("sessions", { ...acc, username: json.username, name: json.name, profile_picture: json.profile_picture_url || acc.profile_picture });
+            reloadAccounts();
+          }
+        } else if (json.error?.code === 190) {
+          await dbPut("sessions", { ...acc, token_status: "expired" });
+          reloadAccounts();
+        }
       }
-      setInsights((p) => ({ ...p, [acc.id]: data.error ? null : data }));
+
+      setInsights((p) => ({ ...p, [acc.id]: data }));
     } catch {
       setInsights((p) => ({ ...p, [acc.id]: null }));
     }
