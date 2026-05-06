@@ -18,20 +18,20 @@ export const handler = async (event) => {
       return { statusCode: 400, headers, body: JSON.stringify({ error: "Campos obrigatórios ausentes" }) };
 
     const fileBuffer = Buffer.from(fileBase64, "base64");
-    const boundary = "----Boundary" + Date.now().toString(36);
+    const boundary = "----FormBoundary" + Date.now().toString(16);
 
-    const headerPart = Buffer.from(
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="reqtype"\r\n\r\nfileupload\r\n` +
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="fileToUpload"; filename="${fileName}"\r\n` +
-      `Content-Type: ${mimeType}\r\n\r\n`
-    );
-    const closingPart = Buffer.from(`\r\n--${boundary}--`);
-    const body = Buffer.concat([headerPart, fileBuffer, closingPart]);
+    const parts = [
+      `--${boundary}\r\nContent-Disposition: form-data; name="reqtype"\r\n\r\nfileupload`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="time"\r\n\r\n1h`,
+      `--${boundary}\r\nContent-Disposition: form-data; name="fileToUpload"; filename="${fileName}"\r\nContent-Type: ${mimeType}\r\n\r\n`,
+    ];
+
+    const bodyStart = Buffer.from(parts.join("\r\n") );
+    const bodyEnd   = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const body      = Buffer.concat([bodyStart, fileBuffer, bodyEnd]);
 
     const url = await new Promise((resolve, reject) => {
-      const options = {
+      const req = https.request({
         hostname: "catbox.moe",
         path: "/user/api.php",
         method: "POST",
@@ -39,19 +39,14 @@ export const handler = async (event) => {
         headers: {
           "Content-Type": `multipart/form-data; boundary=${boundary}`,
           "Content-Length": body.length,
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          "Accept": "*/*",
-          "Origin": "https://catbox.moe",
-          "Referer": "https://catbox.moe/",
+          "User-Agent": "Mozilla/5.0",
         },
-      };
-
-      const req = https.request(options, (res) => {
+      }, (res) => {
         const chunks = [];
         res.on("data", (d) => chunks.push(d));
         res.on("end", () => {
           const text = Buffer.concat(chunks).toString("utf8").trim();
-          console.log("Catbox status:", res.statusCode, "body:", text.slice(0, 200));
+          console.log("Catbox status:", res.statusCode, "| body:", text.slice(0, 300));
           if (text.startsWith("https://")) resolve(text);
           else reject(new Error(`Catbox erro: ${text || res.statusCode}`));
         });
@@ -59,7 +54,6 @@ export const handler = async (event) => {
 
       req.on("timeout", () => { req.destroy(); reject(new Error("Timeout (60s)")); });
       req.on("error", (err) => reject(new Error(`Erro de rede: ${err.message}`)));
-
       req.write(body);
       req.end();
     });
