@@ -27,7 +27,9 @@ export default function NewPost() {
   const [progress, setProgress]             = useState(null);
   const [toast, setToast]                   = useState(null);
   const [confirmPublish, setConfirmPublish] = useState(false);
-  const [showUploader, setShowUploader] = useState(false);
+
+  // ✅ Modo de entrada de mídia: "upload" ou "url"
+  const [mediaMode, setMediaMode] = useState("upload");
 
   const isReel = postType === "REEL";
 
@@ -41,7 +43,7 @@ export default function NewPost() {
       setMediaUrl(items[0].url);
       setMediaType(items[0].type);
     }
-    setShowUploader(false);
+    setMediaMode("url"); // volta para URL após upload
   };
 
   const showCaptions = postType === "FEED" || postType === "REEL";
@@ -71,7 +73,7 @@ export default function NewPost() {
   };
 
   const validateAndPublish = () => {
-    if (!mediaUrl.trim())        return showToast("error", "Cole a URL da mídia (Catbox, etc.)");
+    if (!mediaUrl.trim())        return showToast("error", "Cole a URL da mídia ou faça upload primeiro");
     if (selectedIds.length === 0) return showToast("error", "Selecione ao menos uma conta");
     setConfirmPublish(true);
   };
@@ -116,7 +118,7 @@ export default function NewPost() {
   const reset = () => {
     setProgress(null); setMediaUrl(""); setDefaultCaption("");
     setCustomCaptions({}); setUseCustomCaption({}); setSelectedIds([]);
-    setMediaValid(false);
+    setMediaValid(false); setMediaMode("upload");
   };
 
   return (
@@ -183,47 +185,96 @@ export default function NewPost() {
               </div>
             </div>
 
-            {/* Mídia + Preview com validação */}
+            {/* ✅ Mídia — tabs Upload / URL manual */}
             <div className="card">
-              <div className="form-row">
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <label style={{ margin: 0 }}>URL da mídia</label>
-                  <button className={`btn btn-sm ${showUploader ? "btn-primary" : "btn-ghost"}`} onClick={() => setShowUploader(p => !p)}>☁️ Upload Catbox</button>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                <label style={{ margin: 0 }}>Mídia</label>
+                {/* Tabs de modo */}
+                <div style={{ display: "flex", background: "var(--bg3)", borderRadius: 8, padding: 3, gap: 2 }}>
+                  <button
+                    onClick={() => setMediaMode("upload")}
+                    style={{
+                      padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500,
+                      background: mediaMode === "upload" ? "var(--bg2)" : "transparent",
+                      color: mediaMode === "upload" ? "var(--accent-light)" : "var(--muted)",
+                      border: mediaMode === "upload" ? "1px solid var(--border)" : "1px solid transparent",
+                      transition: "all 0.12s",
+                    }}
+                  >
+                    ☁️ Upload mídia
+                  </button>
+                  <button
+                    onClick={() => setMediaMode("url")}
+                    style={{
+                      padding: "5px 12px", borderRadius: 6, fontSize: 12, fontWeight: 500,
+                      background: mediaMode === "url" ? "var(--bg2)" : "transparent",
+                      color: mediaMode === "url" ? "var(--accent-light)" : "var(--muted)",
+                      border: mediaMode === "url" ? "1px solid var(--border)" : "1px solid transparent",
+                      transition: "all 0.12s",
+                    }}
+                  >
+                    🔗 URL manual
+                  </button>
                 </div>
-                {showUploader && (
-                  <div style={{ marginBottom: 14, padding: 14, background: "var(--bg3)", borderRadius: 10, border: "1px solid var(--border)" }}>
-                    <CatboxUploader onUrlsReady={handleCatboxUrl} mediaType={mediaType} />
-                  </div>
-                )}
+              </div>
+
+              {/* Painel Upload */}
+              {mediaMode === "upload" && (
+                <div style={{ padding: "14px", background: "var(--bg3)", borderRadius: 10, border: "1px solid var(--border)" }}>
+                  <CatboxUploader onUrlsReady={handleCatboxUrl} mediaType={mediaType} />
+                  {mediaUrl && (
+                    <div style={{ marginTop: 10, fontSize: 12, color: "var(--success)", display: "flex", alignItems: "center", gap: 6 }}>
+                      ✅ Mídia enviada —
+                      <span style={{ color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 260 }}>
+                        {mediaUrl}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Painel URL manual */}
+              {mediaMode === "url" && (
                 <input
                   type="url"
                   placeholder="https://files.catbox.moe/xxxxxx.jpg"
                   value={mediaUrl}
                   onChange={(e) => { setMediaUrl(e.target.value); setMediaValid(false); }}
+                  style={{ fontSize: 13 }}
                 />
-              </div>
-              <MediaPreview
-                url={mediaUrl}
-                mediaType={mediaType}
-                onTypeDetected={(t) => setMediaType(t)}
-                onValidated={(v) => setMediaValid(v)}
-              />
-              <div className="form-row" style={{ marginBottom: 0, marginTop: mediaUrl ? 14 : 0 }}>
-                <label>Tipo de mídia</label>
-                <div style={{ display: "flex", gap: 8 }}>
-                  {["IMAGE", "VIDEO"].map((t) => (
-                    <button key={t} onClick={() => setMediaType(t)} style={{
-                      flex: 1, padding: "8px", borderRadius: 8, border: "1px solid",
-                      borderColor: mediaType === t ? "var(--accent)" : "var(--border)",
-                      background: mediaType === t ? "#7c5cfc18" : "var(--bg3)",
-                      color: mediaType === t ? "var(--accent-light)" : "var(--muted)",
-                      fontSize: 13, fontWeight: mediaType === t ? 500 : 400,
-                    }}>
-                      {t === "IMAGE" ? "🖼 Imagem" : "🎬 Vídeo"}
-                    </button>
-                  ))}
+              )}
+
+              {/* Preview sempre visível se tiver URL */}
+              {mediaUrl && (
+                <div style={{ marginTop: 14 }}>
+                  <MediaPreview
+                    url={mediaUrl}
+                    mediaType={mediaType}
+                    onTypeDetected={(t) => setMediaType(t)}
+                    onValidated={(v) => setMediaValid(v)}
+                  />
                 </div>
-              </div>
+              )}
+
+              {/* Tipo de mídia */}
+              {!isReel && (
+                <div className="form-row" style={{ marginBottom: 0, marginTop: mediaUrl ? 14 : 0 }}>
+                  <label>Tipo de mídia</label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {["IMAGE", "VIDEO"].map((t) => (
+                      <button key={t} onClick={() => setMediaType(t)} style={{
+                        flex: 1, padding: "8px", borderRadius: 8, border: "1px solid",
+                        borderColor: mediaType === t ? "var(--accent)" : "var(--border)",
+                        background: mediaType === t ? "#7c5cfc18" : "var(--bg3)",
+                        color: mediaType === t ? "var(--accent-light)" : "var(--muted)",
+                        fontSize: 13, fontWeight: mediaType === t ? 500 : 400,
+                      }}>
+                        {t === "IMAGE" ? "🖼 Imagem" : "🎬 Vídeo"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Legenda padrão */}
@@ -354,7 +405,7 @@ export default function NewPost() {
         </div>
       )}
 
-      {/* Modal de confirmação de publicação */}
+      {/* Modal de confirmação */}
       <Modal
         open={confirmPublish}
         title="Confirmar publicação"

@@ -433,7 +433,7 @@ export default function Schedule() {
                   className={`btn btn-sm ${showUploader ? "btn-primary" : "btn-ghost"}`}
                   onClick={() => setShowUploader((p) => !p)}
                 >
-                  ☁️ Upload Catbox
+                  ☁️ Upload mídias
                 </button>
                 <button className="btn btn-ghost btn-xs" onClick={addUrl}>+ URL manual</button>
               </div>
@@ -638,71 +638,86 @@ export default function Schedule() {
               <div style={{ fontSize: 12 }}>Agendamentos aparecem aqui em tempo real.</div>
             </div>
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
               {queue.map((item) => {
                 const info = STATUS_INFO[item.status] || STATUS_INFO.pending;
                 const scheduledDate = new Date(item.scheduledAt);
                 const isPast = item.scheduledAt < Date.now();
+                // Thumbnail da URL (só imagens)
+                const thumbUrl = item.mediaType === "IMAGE" ? item.mediaUrl : null;
 
                 return (
-                  <div key={item.id} style={{ background: info.bg, border: `1px solid ${info.color}30`, borderRadius: 12, padding: "14px" }}>
-                    <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                  <div key={item.id} style={{
+                    background: info.bg,
+                    border: `1px solid ${info.color}28`,
+                    borderLeft: `3px solid ${info.color}`,
+                    borderRadius: 10,
+                    padding: "9px 11px",
+                  }}>
+                    {/* Linha principal — tudo em uma linha */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+
+                      {/* Thumbnail */}
+                      {thumbUrl ? (
+                        <img src={thumbUrl} alt="" style={{ width: 36, height: 36, borderRadius: 6, objectFit: "cover", flexShrink: 0, border: "1px solid var(--border)" }}
+                          onError={(e) => { e.target.style.display = "none"; }} />
+                      ) : (
+                        <div style={{ width: 36, height: 36, borderRadius: 6, background: "var(--bg3)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>
+                          🎬
+                        </div>
+                      )}
+
+                      {/* Info central */}
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 7, flexWrap: "wrap" }}>
-                          <span style={{ fontSize: 11, fontWeight: 600, color: info.color, background: `${info.color}20`, padding: "2px 8px", borderRadius: 20 }}>
-                            {item.status === "running" ? "⟳ " : ""}{info.label}
+                        {/* Linha 1: status + tipo + horário */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 10, fontWeight: 700, color: info.color }}>
+                            {item.status === "running" ? "⟳ " : ""}{info.label.toUpperCase()}
                           </span>
-                          <span className="badge badge-gray" style={{ fontSize: 10 }}>{item.postType}</span>
-                          <span className="badge badge-gray" style={{ fontSize: 10 }}>{item.mediaType === "IMAGE" ? "🖼" : "🎬"}</span>
-                          {item.distMode && item.distMode !== "all" && (
-                            <span className="badge badge-purple" style={{ fontSize: 10 }}>
-                              {item.distMode === "random" ? "🎲 aleatório" : "🔄 round-robin"}
-                            </span>
-                          )}
-                          {item.loop && <span className="badge badge-purple" style={{ fontSize: 10 }}>🔁 loop</span>}
-                          {item.runCount > 0 && <span style={{ fontSize: 10, color: "var(--muted)" }}>×{item.runCount}</span>}
+                          <span style={{ fontSize: 10, color: "var(--muted)", background: "var(--bg3)", padding: "1px 6px", borderRadius: 4 }}>{item.postType}</span>
+                          <span style={{ fontSize: 10, color: "var(--muted)" }}>{item.mediaType === "IMAGE" ? "🖼" : "🎬"}</span>
+                          {item.loop && <span style={{ fontSize: 9, color: "var(--accent-light)" }}>🔁</span>}
+                          {item.runCount > 0 && <span style={{ fontSize: 9, color: "var(--muted)" }}>×{item.runCount}</span>}
+                          <span style={{ fontSize: 10, color: isPast && item.status === "pending" ? "var(--warning)" : "var(--muted)", marginLeft: "auto" }}>
+                            🕐 {scheduledDate.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                            {isPast && item.status === "pending" && " ⚠"}
+                          </span>
                         </div>
 
-                        <div style={{ fontSize: 12, color: isPast && item.status === "pending" ? "var(--warning)" : "var(--text)", marginBottom: 5 }}>
-                          🕐 {scheduledDate.toLocaleString("pt-BR")}
-                          {isPast && item.status === "pending" && " (atrasado)"}
-                        </div>
-
-                        <div style={{ fontSize: 11, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 5 }}>
-                          {item.mediaUrl}
-                        </div>
-
-                        {item.caption && (
-                          <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            "{item.caption}"
+                        {/* Linha 2: avatars das contas + URL truncada */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                          <div style={{ display: "flex", gap: -2 }}>
+                            {(item.accounts || []).slice(0, 5).map((a, i) => (
+                              <div key={a.id} title={`@${a.username}`} style={{ marginLeft: i > 0 ? -6 : 0, zIndex: 5 - i, position: "relative" }}>
+                                {a.profile_picture
+                                  ? <img src={a.profile_picture} alt="" style={{ width: 16, height: 16, borderRadius: "50%", objectFit: "cover", border: "1.5px solid var(--bg2)" }} />
+                                  : <div style={{ width: 16, height: 16, borderRadius: "50%", background: "linear-gradient(135deg, var(--accent), #9b4dfc)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 7, color: "#fff", fontWeight: 700, border: "1.5px solid var(--bg2)" }}>
+                                      {(a.username || "?")[0].toUpperCase()}
+                                    </div>}
+                              </div>
+                            ))}
+                            {(item.accounts || []).length > 5 && (
+                              <span style={{ fontSize: 9, color: "var(--muted)", marginLeft: 4 }}>+{item.accounts.length - 5}</span>
+                            )}
                           </div>
-                        )}
-
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                          {(item.accounts || []).map((a) => (
-                            <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 5, background: "var(--bg4)", padding: "3px 8px", borderRadius: 10 }}>
-                              {a.profile_picture
-                                ? <img src={a.profile_picture} alt="" style={{ width: 14, height: 14, borderRadius: "50%", objectFit: "cover" }} />
-                                : <div style={{ width: 14, height: 14, borderRadius: "50%", background: "linear-gradient(135deg, var(--accent), #9b4dfc)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, color: "#fff", fontWeight: 700 }}>
-                                    {(a.username || "?")[0].toUpperCase()}
-                                  </div>}
-                              <span style={{ fontSize: 10, color: "var(--muted)" }}>@{a.username}</span>
-                            </div>
-                          ))}
+                          <span style={{ fontSize: 10, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+                            {item.mediaUrl?.split("/").pop()}
+                          </span>
                         </div>
 
                         {item.error && (
-                          <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 6, padding: "4px 8px", background: "rgba(239,68,68,0.06)", borderRadius: 6 }}>
+                          <div style={{ fontSize: 10, color: "var(--danger)", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             ✗ {item.error}
                           </div>
                         )}
                       </div>
 
-                      <div style={{ display: "flex", flexDirection: "column", gap: 5, flexShrink: 0 }}>
+                      {/* Ações */}
+                      <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
                         {(item.status === "pending" || item.status === "error") && (
-                          <button className="btn btn-ghost btn-xs" onClick={() => openEdit(item)} title="Editar">✎</button>
+                          <button className="btn btn-ghost btn-xs" onClick={() => openEdit(item)} title="Editar" style={{ padding: "3px 7px", fontSize: 12 }}>✎</button>
                         )}
-                        <button className="btn btn-ghost btn-xs" style={{ color: "var(--danger)" }}
+                        <button className="btn btn-ghost btn-xs" style={{ color: "var(--danger)", padding: "3px 7px", fontSize: 12 }}
                           onClick={() => setConfirmModal({ type: "removeItem", id: item.id })} title="Remover">✕</button>
                       </div>
                     </div>
