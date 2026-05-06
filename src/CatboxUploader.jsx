@@ -1,7 +1,5 @@
-// CatboxUploader.jsx — Upload de arquivos para Catbox.moe com retorno automático de URL
+// CatboxUploader.jsx — Upload via proxy Netlify (resolve CORS)
 import { useState, useRef, useCallback } from "react";
-
-const CATBOX_API = "https://catbox.moe/user/api.php";
 
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -17,35 +15,47 @@ function isVideo(name) {
   return ["mp4", "mov", "avi", "mkv", "webm"].includes(getExt(name));
 }
 
-// Faz upload de um único arquivo para o Catbox
+// Upload via proxy Netlify — evita bloqueio de CORS do browser
 async function uploadToCatbox(file, onProgress) {
-  const form = new FormData();
-  form.append("reqtype", "fileupload");
-  form.append("fileToUpload", file);
-
   return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append("reqtype", "fileupload");
+    form.append("fileToUpload", file);
+
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", CATBOX_API);
+    // Usa o proxy local em vez de chamar catbox.moe diretamente
+    xhr.open("POST", "/api/catbox-proxy");
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
     };
 
     xhr.onload = () => {
-      if (xhr.status === 200 && xhr.responseText.startsWith("https://")) {
-        resolve(xhr.responseText.trim());
+      if (xhr.status === 200) {
+        try {
+          const data = JSON.parse(xhr.responseText);
+          if (data.url) {
+            resolve(data.url);
+          } else {
+            reject(new Error(data.error || "Resposta inválida do servidor"));
+          }
+        } catch {
+          reject(new Error("Resposta inválida do servidor"));
+        }
       } else {
-        reject(new Error(xhr.responseText || "Falha no upload"));
+        let msg = `Erro ${xhr.status}`;
+        try { msg = JSON.parse(xhr.responseText).error || msg; } catch {}
+        reject(new Error(msg));
       }
     };
 
-    xhr.onerror = () => reject(new Error("Erro de rede"));
+    xhr.onerror = () => reject(new Error("Erro de rede — verifique sua conexão"));
     xhr.send(form);
   });
 }
 
-export default function CatboxUploader({ onUrlsReady, mediaType }) {
-  const [files, setFiles]         = useState([]); // [{file, status, progress, url, error}]
+export default function CatboxUploader({ onUrlsReady }) {
+  const [files, setFiles]         = useState([]);
   const [dragging, setDragging]   = useState(false);
   const [uploading, setUploading] = useState(false);
   const inputRef = useRef();
@@ -56,7 +66,7 @@ export default function CatboxUploader({ onUrlsReady, mediaType }) {
       file,
       name: file.name,
       size: file.size,
-      status: "idle", // idle | uploading | done | error
+      status: "idle",
       progress: 0,
       url: "",
       error: "",
@@ -71,7 +81,7 @@ export default function CatboxUploader({ onUrlsReady, mediaType }) {
     if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
   }, []);
 
-  const onDragOver = (e) => { e.preventDefault(); setDragging(true); };
+  const onDragOver  = (e) => { e.preventDefault(); setDragging(true); };
   const onDragLeave = () => setDragging(false);
 
   const removeFile = (id) => setFiles((p) => p.filter((f) => f.id !== id));
@@ -84,16 +94,22 @@ export default function CatboxUploader({ onUrlsReady, mediaType }) {
     setUploading(true);
 
     for (const entry of pending) {
-      setFiles((p) => p.map((f) => f.id === entry.id ? { ...f, status: "uploading", progress: 0, error: "" } : f));
+      setFiles((p) =>
+        p.map((f) => f.id === entry.id ? { ...f, status: "uploading", progress: 0, error: "" } : f)
+      );
 
       try {
         const url = await uploadToCatbox(entry.file, (progress) => {
           setFiles((p) => p.map((f) => f.id === entry.id ? { ...f, progress } : f));
         });
 
-        setFiles((p) => p.map((f) => f.id === entry.id ? { ...f, status: "done", url, progress: 100 } : f));
+        setFiles((p) =>
+          p.map((f) => f.id === entry.id ? { ...f, status: "done", url, progress: 100 } : f)
+        );
       } catch (err) {
-        setFiles((p) => p.map((f) => f.id === entry.id ? { ...f, status: "error", error: err.message } : f));
+        setFiles((p) =>
+          p.map((f) => f.id === entry.id ? { ...f, status: "error", error: err.message } : f)
+        );
       }
     }
 
@@ -102,7 +118,9 @@ export default function CatboxUploader({ onUrlsReady, mediaType }) {
     // Retorna URLs prontas para o componente pai
     setFiles((current) => {
       const done = current.filter((f) => f.status === "done");
-      if (done.length > 0) onUrlsReady(done.map((f) => ({ url: f.url, type: f.type, name: f.name })));
+      if (done.length > 0) {
+        onUrlsReady(done.map((f) => ({ url: f.url, type: f.type, name: f.name })));
+      }
       return current;
     });
   };
@@ -125,7 +143,7 @@ export default function CatboxUploader({ onUrlsReady, mediaType }) {
           padding: "28px 20px",
           textAlign: "center",
           cursor: uploading ? "not-allowed" : "pointer",
-          background: dragging ? "var(--accent-glow)" : "var(--bg3)",
+          background: dragging ? "rgba(124,92,252,0.08)" : "var(--bg3)",
           transition: "all 0.15s",
         }}
       >
@@ -152,9 +170,17 @@ export default function CatboxUploader({ onUrlsReady, mediaType }) {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
             <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>
               {files.length} arquivo(s) · {doneFiles.length} enviado(s)
-              {errorFiles.length > 0 && <span style={{ color: "var(--danger)", marginLeft: 8 }}>{errorFiles.length} erro(s)</span>}
+              {errorFiles.length > 0 && (
+                <span style={{ color: "var(--danger)", marginLeft: 8 }}>{errorFiles.length} erro(s)</span>
+              )}
             </div>
-            <button className="btn btn-ghost btn-xs" onClick={clearAll} disabled={uploading}>Limpar</button>
+            <button
+              className="btn btn-ghost btn-xs"
+              onClick={clearAll}
+              disabled={uploading}
+            >
+              Limpar
+            </button>
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 260, overflowY: "auto" }}>
@@ -162,24 +188,43 @@ export default function CatboxUploader({ onUrlsReady, mediaType }) {
               <div key={f.id} style={{
                 display: "flex", alignItems: "center", gap: 10,
                 padding: "9px 12px", borderRadius: 8,
-                background: f.status === "done" ? "rgba(16,185,129,0.06)" : f.status === "error" ? "rgba(239,68,68,0.06)" : "var(--bg3)",
-                border: `1px solid ${f.status === "done" ? "rgba(16,185,129,0.2)" : f.status === "error" ? "rgba(239,68,68,0.2)" : "var(--border)"}`,
+                background: f.status === "done"
+                  ? "rgba(16,185,129,0.06)"
+                  : f.status === "error"
+                  ? "rgba(239,68,68,0.06)"
+                  : "var(--bg3)",
+                border: `1px solid ${
+                  f.status === "done"
+                    ? "rgba(16,185,129,0.2)"
+                    : f.status === "error"
+                    ? "rgba(239,68,68,0.2)"
+                    : "var(--border)"
+                }`,
               }}>
-                {/* Ícone tipo */}
-                <span style={{ fontSize: 16, flexShrink: 0 }}>{f.type === "VIDEO" ? "🎬" : "🖼"}</span>
+                <span style={{ fontSize: 16, flexShrink: 0 }}>
+                  {f.type === "VIDEO" ? "🎬" : "🖼"}
+                </span>
 
-                {/* Info */}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
-                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{formatSize(f.size)}</div>
+                  <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {f.name}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                    {formatSize(f.size)}
+                  </div>
 
                   {/* Barra de progresso */}
                   {f.status === "uploading" && (
                     <div style={{ marginTop: 5 }}>
                       <div style={{ height: 3, background: "var(--border)", borderRadius: 2, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: `${f.progress}%`, background: "var(--accent)", transition: "width 0.2s", borderRadius: 2 }} />
+                        <div style={{
+                          height: "100%", width: `${f.progress}%`,
+                          background: "var(--accent)", transition: "width 0.2s", borderRadius: 2,
+                        }} />
                       </div>
-                      <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>{f.progress}%</div>
+                      <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
+                        {f.progress}% — enviando para Catbox...
+                      </div>
                     </div>
                   )}
 
@@ -192,7 +237,9 @@ export default function CatboxUploader({ onUrlsReady, mediaType }) {
 
                   {/* Erro */}
                   {f.status === "error" && (
-                    <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 3 }}>✗ {f.error}</div>
+                    <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 3 }}>
+                      ✗ {f.error}
+                    </div>
                   )}
                 </div>
 
@@ -206,24 +253,30 @@ export default function CatboxUploader({ onUrlsReady, mediaType }) {
 
                 {/* Remover */}
                 {f.status !== "uploading" && (
-                  <button onClick={() => removeFile(f.id)} style={{ background: "none", color: "var(--muted)", fontSize: 16, padding: 0, flexShrink: 0 }}>×</button>
+                  <button
+                    onClick={() => removeFile(f.id)}
+                    style={{ background: "none", color: "var(--muted)", fontSize: 16, padding: 0, flexShrink: 0 }}
+                  >
+                    ×
+                  </button>
                 )}
               </div>
             ))}
           </div>
 
-          {/* Botão upload */}
+          {/* Botões de ação */}
           <div style={{ marginTop: 14, display: "flex", gap: 10, alignItems: "center" }}>
             <button
               className="btn btn-primary"
               onClick={uploadAll}
-              disabled={uploading || idleFiles.length === 0 && errorFiles.length === 0}
+              disabled={uploading || (idleFiles.length === 0 && errorFiles.length === 0)}
               style={{ flex: 1 }}
             >
               {uploading
                 ? <><span className="spinner" /> Enviando para Catbox...</>
                 : `☁️ Enviar ${idleFiles.length + errorFiles.length} arquivo(s) para Catbox`}
             </button>
+
             {doneFiles.length > 0 && (
               <button
                 className="btn btn-success"
