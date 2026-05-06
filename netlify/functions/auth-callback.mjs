@@ -1,37 +1,11 @@
-// Atualizado para Graph API v21.0 — busca páginas pessoais + Business Managers
+// Graph API v21.0 — busca páginas pessoais + Business Managers
 const GRAPH = "https://graph.facebook.com/v21.0";
 
-async function getIgAccount(pageId, pageToken, APP_ID, APP_SECRET) {
-  // Buscar conta Instagram vinculada à página
-  const igRes  = await fetch(`${GRAPH}/${pageId}?fields=instagram_business_account&access_token=${pageToken}`);
-  const igData = await igRes.json();
-  const igAccount = igData.instagram_business_account;
-  if (!igAccount) return null;
-
-  const igId = igAccount.id;
-
-  // Detalhes da conta IG
-  const detailRes = await fetch(`${GRAPH}/${igId}?fields=username,profile_picture_url,account_type,name&access_token=${pageToken}`);
-  const detail    = await detailRes.json();
-  if (detail.error) return null;
-
-  // Token de longa duração para a página
-  const longRes = await fetch(
-    `${GRAPH}/oauth/access_token?grant_type=fb_exchange_token&client_id=${APP_ID}&client_secret=${APP_SECRET}&fb_exchange_token=${pageToken}`
-  );
-  const longData   = await longRes.json();
-  const finalToken = longData.access_token || pageToken;
-
-  return {
-    id:              igId,
-    username:        detail.username || "",
-    name:            detail.name || detail.username || "",
-    profile_picture: detail.profile_picture_url || "",
-    account_type:    detail.account_type || "BUSINESS",
-    access_token:    finalToken,
-    page_id:         pageId,
-    connected_at:    new Date().toISOString(),
-  };
+// Busca o token de acesso de uma página específica via userToken
+async function getPageToken(pageId, userToken) {
+  const res  = await fetch(`${GRAPH}/${pageId}?fields=access_token&access_token=${userToken}`);
+  const data = await res.json();
+  return data.access_token || null;
 }
 
 export const handler = async (event) => {
@@ -59,59 +33,78 @@ export const handler = async (event) => {
     const longData  = await longRes.json();
     const userToken = longData.access_token || tokenData.access_token;
 
-    const accounts   = [];
-    const seenIgIds  = new Set(); // evita duplicatas
+    const accounts  = [];
+    const seenIgIds = new Set();
 
-    // ── 3. Páginas pessoais (me/accounts) ────────────────────────────────
+    // helper: dado pageId + token, monta o objeto da conta IG
+    const processPage = async (pageId, token, source, bmInfo = {}) => {
+      try {
+        const igRes  = await fetch(`${GRAPH}/${pageId}?fields=instagram_business_account&access_token=${token}`);
+        const igData = await igRes.json();
+        if (!igData.instagram_business_account) return;
+
+        const igId = igData.instagram_business_account.id;
+        if (seenIgIds.has(igId)) return;
+
+        const detailRes = await fetch(`${GRAPH}/${igId}?fields=username,profile_picture_url,account_type,name&access_token=${token}`);
+        const detail    = await detailRes.json();
+        if (!detail.username) return;
+
+        // Token longo para a página
+        let finalToken = token;
+        try {
+          const lr = await fetch(`${GRAPH}/oauth/access_token?grant_type=fb_exchange_token&client_id=${APP_ID}&client_secret=${APP_SECRET}&fb_exchange_token=${token}`);
+          const ld = await lr.json();
+          if (ld.access_token) finalToken = ld.access_token;
+        } catch (_) {}
+
+        seenIgIds.add(igId);
+        accounts.push({
+          id:              igId,
+          username:        detail.username || "",
+          name:            detail.name || detail.username || "",
+          profile_picture: detail.profile_picture_url || "",
+          account_type:    detail.account_type || "BUSINESS",
+          access_token:    finalToken,
+          page_id:         pageId,
+          connected_at:    new Date().toISOString(),
+          source,
+          ...bmInfo,
+        });
+      } catch (_) {}
+    };
+
+    // ── 3. Páginas pessoais ───────────────────────────────────────────────
     const pagesRes  = await fetch(`${GRAPH}/me/accounts?fields=id,name,access_token&limit=100&access_token=${userToken}`);
     const pagesData = await pagesRes.json();
-    const pages     = pagesData.data || [];
-
-    for (const page of pages) {
-      const acc = await getIgAccount(page.id, page.access_token, APP_ID, APP_SECRET);
-      if (acc && !seenIgIds.has(acc.id)) {
-        seenIgIds.add(acc.id);
-        accounts.push({ ...acc, source: "personal" });
-      }
+    for (const page of (pagesData.data || [])) {
+      await processPage(page.id, page.access_token || userToken, "personal");
     }
 
-    // ── 4. Páginas dos Business Managers ─────────────────────────────────
+    // ── 4. Business Managers ──────────────────────────────────────────────
     const bmRes  = await fetch(`${GRAPH}/me/businesses?fields=id,name&limit=50&access_token=${userToken}`);
     const bmData = await bmRes.json();
-    const bms    = bmData.data || [];
 
-    for (const bm of bms) {
-      // Buscar páginas owned pelo BM
-      const bmPagesRes  = await fetch(
-        `${GRAPH}/${bm.id}/owned_pages?fields=id,name,access_token&limit=100&access_token=${userToken}`
-      );
-      const bmPagesData = await bmPagesRes.json();
-      const bmPages     = bmPagesData.data || [];
+    for (const bm of (bmData.data || [])) {
+      const bmInfo = { business_id: bm.id, business_name: bm.name };
 
-      for (const page of bmPages) {
-        // Página pode não vir com access_token via BM — usa o userToken como fallback
-        const pageToken = page.access_token || userToken;
-        const acc = await getIgAccount(page.id, pageToken, APP_ID, APP_SECRET);
-        if (acc && !seenIgIds.has(acc.id)) {
-          seenIgIds.add(acc.id);
-          accounts.push({ ...acc, source: "business", business_id: bm.id, business_name: bm.name });
-        }
+      // owned_pages
+      const ownedRes  = await fetch(`${GRAPH}/${bm.id}/owned_pages?fields=id,name&limit=100&access_token=${userToken}`);
+      const ownedData = await ownedRes.json();
+      for (const page of (ownedData.data || [])) {
+        // Páginas do BM não vêm com access_token — busca separado
+        const pageToken = await getPageToken(page.id, userToken);
+        if (!pageToken) continue;
+        await processPage(page.id, pageToken, "business", bmInfo);
       }
 
-      // Buscar também páginas client (caso o BM tenha acesso a páginas de clientes)
-      const clientPagesRes  = await fetch(
-        `${GRAPH}/${bm.id}/client_pages?fields=id,name,access_token&limit=100&access_token=${userToken}`
-      );
-      const clientPagesData = await clientPagesRes.json();
-      const clientPages     = clientPagesData.data || [];
-
-      for (const page of clientPages) {
-        const pageToken = page.access_token || userToken;
-        const acc = await getIgAccount(page.id, pageToken, APP_ID, APP_SECRET);
-        if (acc && !seenIgIds.has(acc.id)) {
-          seenIgIds.add(acc.id);
-          accounts.push({ ...acc, source: "client", business_id: bm.id, business_name: bm.name });
-        }
+      // client_pages
+      const clientRes  = await fetch(`${GRAPH}/${bm.id}/client_pages?fields=id,name&limit=100&access_token=${userToken}`);
+      const clientData = await clientRes.json();
+      for (const page of (clientData.data || [])) {
+        const pageToken = await getPageToken(page.id, userToken);
+        if (!pageToken) continue;
+        await processPage(page.id, pageToken, "client", bmInfo);
       }
     }
 
