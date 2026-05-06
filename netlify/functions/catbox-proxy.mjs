@@ -2,12 +2,16 @@
 import https from "https";
 import crypto from "crypto";
 
-const R2_ACCOUNT_ID  = "604d4b77f2213f87fcd412ab2441850f";
-const R2_ACCESS_KEY  = "c432b65b2ed857c9ff45d750c743c152";
-const R2_SECRET_KEY  = "b9aebd41695250484b034f74133e2958a1d4eb2ea4ba4a3edd2a059b36d00520";
-const R2_BUCKET      = "insta-midias";
-const R2_PUBLIC_URL  = "https://pub-f91190716469483c83ebaf881cfe3ba3.r2.dev";
-const R2_ENDPOINT    = `${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+// ✅ SEGURANÇA: credenciais carregadas de variáveis de ambiente (nunca em código-fonte)
+const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
+const R2_ACCESS_KEY = process.env.R2_ACCESS_KEY;
+const R2_SECRET_KEY = process.env.R2_SECRET_KEY;
+const R2_BUCKET     = process.env.R2_BUCKET     || "insta-midias";
+const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
+const R2_ENDPOINT   = `${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+
+// ✅ CORS restrito ao domínio próprio (configurado via env var no Netlify)
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || process.env.URL || "";
 
 function hmac(key, data, encoding) {
   return crypto.createHmac("sha256", key).update(data).digest(encoding);
@@ -27,12 +31,11 @@ function getSignatureKey(secretKey, dateStamp, region, service) {
 
 async function uploadToR2(fileBuffer, fileName, mimeType) {
   const now       = new Date();
-  const amzDate   = now.toISOString().replace(/[:-]|\.\d{3}/g, "").slice(0, 15) + "Z";
+  const amzDate   = now.toISOString().replace(/[:-]|\\.\\d{3}/g, "").slice(0, 15) + "Z";
   const dateStamp = amzDate.slice(0, 8);
   const region    = "auto";
   const service   = "s3";
 
-  // Gera nome único para o arquivo
   const ext      = fileName.split(".").pop();
   const key      = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
   const bodyHash = hash(fileBuffer);
@@ -102,21 +105,47 @@ async function uploadToR2(fileBuffer, fileName, mimeType) {
 }
 
 export const handler = async (event) => {
+  // ✅ CORS restrito — só aceita origem autorizada
+  const requestOrigin = event.headers?.origin || "";
+  const corsOrigin = ALLOWED_ORIGIN && requestOrigin === ALLOWED_ORIGIN
+    ? ALLOWED_ORIGIN
+    : ALLOWED_ORIGIN || "*";
+
   const headers = {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": corsOrigin,
     "Access-Control-Allow-Headers": "Content-Type",
     "Content-Type": "application/json",
+    ...(corsOrigin !== "*" && { "Vary": "Origin" }),
   };
 
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers };
   if (event.httpMethod !== "POST")
     return { statusCode: 405, headers, body: JSON.stringify({ error: "Método não permitido" }) };
 
+  // ✅ Verificar variáveis de ambiente obrigatórias antes de prosseguir
+  if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY || !R2_SECRET_KEY || !R2_PUBLIC_URL) {
+    console.error("Variáveis de ambiente R2 não configuradas");
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ error: "Configuração do servidor incompleta. Configure R2_ACCOUNT_ID, R2_ACCESS_KEY, R2_SECRET_KEY e R2_PUBLIC_URL no painel do Netlify." }),
+    };
+  }
+
   try {
     const { fileBase64, fileName, mimeType } = JSON.parse(event.body || "{}");
 
     if (!fileBase64 || !fileName || !mimeType)
       return { statusCode: 400, headers, body: JSON.stringify({ error: "Campos obrigatórios ausentes" }) };
+
+    // ✅ Validar mimeType permitido (whitelist)
+    const ALLOWED_MIME = [
+      "image/jpeg", "image/png", "image/webp", "image/gif",
+      "video/mp4", "video/quicktime", "video/webm",
+    ];
+    if (!ALLOWED_MIME.includes(mimeType)) {
+      return { statusCode: 400, headers, body: JSON.stringify({ error: `Tipo de mídia não permitido: ${mimeType}` }) };
+    }
 
     const fileBuffer = Buffer.from(fileBase64, "base64");
     console.log("Enviando para R2:", fileName, mimeType, fileBuffer.length, "bytes");

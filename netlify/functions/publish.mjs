@@ -1,6 +1,36 @@
 const GRAPH = "https://graph.facebook.com/v21.0";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// ✅ CORS restrito ao domínio próprio
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || process.env.URL || "";
+
+// ✅ Validação de URL de mídia
+function isValidMediaUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// ✅ Verificação de token antes de publicar
+async function verifyToken(token) {
+  try {
+    const res  = await fetch(`${GRAPH}/me?fields=id&access_token=${token}`);
+    const data = await res.json();
+    if (data.error) {
+      const code = data.error.code;
+      // códigos 190 = token inválido/expirado
+      if (code === 190) return { valid: false, expired: true };
+      return { valid: false, expired: false };
+    }
+    return { valid: true, expired: false };
+  } catch {
+    return { valid: true, expired: false }; // falha de rede — não bloquear, deixar a Meta decidir
+  }
+}
+
 async function waitForContainer(containerId, token, maxAttempts = 20) {
   for (let i = 0; i < maxAttempts; i++) {
     await sleep(6000);
@@ -16,6 +46,15 @@ async function publishOne({ account, media_url, media_type, post_type, caption }
   const { id: igId, access_token: token } = account;
   const isVideo = media_type === "VIDEO";
 
+  // ✅ Verificar token antes de tentar publicar
+  const tokenCheck = await verifyToken(token);
+  if (!tokenCheck.valid) {
+    const msg = tokenCheck.expired
+      ? "Token expirado. Reconecte a conta no painel de Contas."
+      : "Token inválido. Reconecte a conta no painel de Contas.";
+    return { success: false, error: msg, token_expired: tokenCheck.expired };
+  }
+
   try {
     let payload = { access_token: token };
 
@@ -24,7 +63,6 @@ async function publishOne({ account, media_url, media_type, post_type, caption }
         ? { ...payload, video_url: media_url, media_type: "REELS", caption }
         : { ...payload, image_url: media_url, caption };
     } else if (post_type === "REEL") {
-      // Reels: SOMENTE vídeo via API
       if (!isVideo) return { success: false, error: "Reels só aceita vídeo via API do Instagram. Use a mídia do tipo VIDEO." };
       payload = { ...payload, video_url: media_url, media_type: "REELS", caption, share_to_feed: true };
     } else if (post_type === "STORY") {
@@ -61,10 +99,17 @@ async function publishOne({ account, media_url, media_type, post_type, caption }
 }
 
 export const handler = async (event) => {
+  // ✅ CORS restrito
+  const requestOrigin = event.headers?.origin || "";
+  const corsOrigin = ALLOWED_ORIGIN && requestOrigin === ALLOWED_ORIGIN
+    ? ALLOWED_ORIGIN
+    : ALLOWED_ORIGIN || "*";
+
   const headers = {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": corsOrigin,
     "Access-Control-Allow-Headers": "Content-Type",
     "Content-Type": "application/json",
+    ...(corsOrigin !== "*" && { "Vary": "Origin" }),
   };
 
   if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers };
@@ -75,8 +120,23 @@ export const handler = async (event) => {
   catch { return { statusCode: 400, headers, body: JSON.stringify({ error: "JSON inválido" }) }; }
 
   const { accounts, media_url, media_type, post_type, captions, default_caption, delay_seconds } = body;
+
+  // ✅ Validação ampliada dos campos de entrada
   if (!accounts?.length || !media_url || !media_type || !post_type) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: "Campos obrigatórios ausentes" }) };
+  }
+
+  const VALID_MEDIA_TYPES = ["IMAGE", "VIDEO"];
+  const VALID_POST_TYPES  = ["FEED", "REEL", "STORY"];
+
+  if (!VALID_MEDIA_TYPES.includes(media_type)) {
+    return { statusCode: 400, headers, body: JSON.stringify({ error: `media_type inválido: ${media_type}` }) };
+  }
+  if (!VALID_POST_TYPES.includes(post_type)) {
+    return { statusCode: 400, headers, body: JSON.stringify({ error: `post_type inválido: ${post_type}` }) };
+  }
+  if (!isValidMediaUrl(media_url)) {
+    return { statusCode: 400, headers, body: JSON.stringify({ error: "media_url deve ser uma URL HTTPS válida" }) };
   }
 
   const delayMs = (parseInt(delay_seconds) || 0) * 1000;
