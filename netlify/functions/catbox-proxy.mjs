@@ -1,119 +1,104 @@
-// catbox-proxy.mjs — agora usa Telegram como CDN (catbox.moe bloqueia IPs de datacenter)
+// catbox-proxy.mjs — usa Cloudflare R2 como CDN de mídia
 import https from "https";
+import crypto from "crypto";
 
-const BOT_TOKEN = "8364004619:AAHmmnWqfrIVlqfW-0BXrb7Ln3j_xgg-ieM";
-const CHAT_ID   = "-1003994898545";
+const R2_ACCOUNT_ID  = "604d4b77f2213f87fcd412ab2441850f";
+const R2_ACCESS_KEY  = "c432b65b2ed857c9ff45d750c743c152";
+const R2_SECRET_KEY  = "b9aebd41695250484b034f74133e2958a1d4eb2ea4ba4a3edd2a059b36d00520";
+const R2_BUCKET      = "insta-midias";
+const R2_PUBLIC_URL  = "https://pub-f91190716469483c83ebaf881cfe3ba3.r2.dev";
+const R2_ENDPOINT    = `${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
 
-function telegramRequest(method, formBody) {
+function hmac(key, data, encoding) {
+  return crypto.createHmac("sha256", key).update(data).digest(encoding);
+}
+
+function hash(data) {
+  return crypto.createHash("sha256").update(data).digest("hex");
+}
+
+function getSignatureKey(secretKey, dateStamp, region, service) {
+  const kDate    = hmac("AWS4" + secretKey, dateStamp);
+  const kRegion  = hmac(kDate, region);
+  const kService = hmac(kRegion, service);
+  const kSigning = hmac(kService, "aws4_request");
+  return kSigning;
+}
+
+async function uploadToR2(fileBuffer, fileName, mimeType) {
+  const now       = new Date();
+  const amzDate   = now.toISOString().replace(/[:-]|\.\d{3}/g, "").slice(0, 15) + "Z";
+  const dateStamp = amzDate.slice(0, 8);
+  const region    = "auto";
+  const service   = "s3";
+
+  // Gera nome único para o arquivo
+  const ext      = fileName.split(".").pop();
+  const key      = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+  const bodyHash = hash(fileBuffer);
+
+  const canonicalHeaders =
+    `content-type:${mimeType}\n` +
+    `host:${R2_ENDPOINT}\n` +
+    `x-amz-content-sha256:${bodyHash}\n` +
+    `x-amz-date:${amzDate}\n`;
+
+  const signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date";
+
+  const canonicalRequest = [
+    "PUT",
+    `/${R2_BUCKET}/${key}`,
+    "",
+    canonicalHeaders,
+    signedHeaders,
+    bodyHash,
+  ].join("\n");
+
+  const credentialScope = `${dateStamp}/${region}/${service}/aws4_request`;
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    credentialScope,
+    hash(canonicalRequest),
+  ].join("\n");
+
+  const signingKey = getSignatureKey(R2_SECRET_KEY, dateStamp, region, service);
+  const signature  = hmac(signingKey, stringToSign, "hex");
+
+  const authorization =
+    `AWS4-HMAC-SHA256 Credential=${R2_ACCESS_KEY}/${credentialScope}, ` +
+    `SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
   return new Promise((resolve, reject) => {
     const req = https.request({
-      hostname: "api.telegram.org",
-      path: `/bot${BOT_TOKEN}/${method}`,
-      method: "POST",
+      hostname: R2_ENDPOINT,
+      path: `/${R2_BUCKET}/${key}`,
+      method: "PUT",
       timeout: 60000,
       headers: {
-        "Content-Type": formBody.contentType,
-        "Content-Length": formBody.buffer.length,
+        "Content-Type": mimeType,
+        "Content-Length": fileBuffer.length,
+        "x-amz-date": amzDate,
+        "x-amz-content-sha256": bodyHash,
+        "Authorization": authorization,
       },
     }, (res) => {
       const chunks = [];
       res.on("data", (d) => chunks.push(d));
       res.on("end", () => {
-        try {
-          const json = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-          if (json.ok) resolve(json.result);
-          else reject(new Error(`Telegram erro: ${json.description}`));
-        } catch (e) {
-          reject(new Error("Resposta inválida do Telegram"));
+        console.log("R2 status:", res.statusCode, Buffer.concat(chunks).toString().slice(0, 200));
+        if (res.statusCode === 200) {
+          resolve(`${R2_PUBLIC_URL}/${key}`);
+        } else {
+          reject(new Error(`R2 erro ${res.statusCode}: ${Buffer.concat(chunks).toString().slice(0, 200)}`));
         }
       });
     });
-    req.on("timeout", () => { req.destroy(); reject(new Error("Timeout Telegram (60s)")); });
+    req.on("timeout", () => { req.destroy(); reject(new Error("Timeout R2 (60s)")); });
     req.on("error", (err) => reject(new Error(`Erro de rede: ${err.message}`)));
-    req.write(formBody.buffer);
+    req.write(fileBuffer);
     req.end();
   });
-}
-
-function buildMultipart(fields, file) {
-  const boundary = "----TGBoundary" + Date.now().toString(16);
-  const parts = [];
-
-  for (const [name, value] of Object.entries(fields)) {
-    parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`
-    ));
-  }
-
-  parts.push(Buffer.from(
-    `--${boundary}\r\nContent-Disposition: form-data; name="${file.field}"; filename="${file.name}"\r\nContent-Type: ${file.mimeType}\r\n\r\n`
-  ));
-  parts.push(file.buffer);
-  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
-
-  return {
-    buffer: Buffer.concat(parts),
-    contentType: `multipart/form-data; boundary=${boundary}`,
-  };
-}
-
-function isVideo(mimeType) {
-  return mimeType.startsWith("video/");
-}
-
-async function uploadToTelegram(fileBuffer, fileName, mimeType) {
-  const video = isVideo(mimeType);
-  const method = video ? "sendVideo" : "sendPhoto";
-  const field  = video ? "video" : "photo";
-
-  const form = buildMultipart(
-    { chat_id: CHAT_ID },
-    { field, name: fileName, mimeType, buffer: fileBuffer }
-  );
-
-  const result = await telegramRequest(method, form);
-
-  // Pega o file_id do maior tamanho disponível
-  let fileId;
-  if (video) {
-    fileId = result.video?.file_id;
-  } else {
-    const photos = result.photo;
-    fileId = photos?.[photos.length - 1]?.file_id;
-  }
-
-  if (!fileId) throw new Error("file_id não retornado pelo Telegram");
-
-  // Obtém a URL de download direto
-  const fileMeta = await telegramRequest("getFile", buildMultipart(
-    { file_id: fileId }, { field: "_dummy", name: "x", mimeType: "text/plain", buffer: Buffer.alloc(0) }
-  ));
-
-  // getFile não usa multipart — refaz com JSON
-  const fileMetaJson = await new Promise((resolve, reject) => {
-    const body = JSON.stringify({ file_id: fileId });
-    const req = https.request({
-      hostname: "api.telegram.org",
-      path: `/bot${BOT_TOKEN}/getFile`,
-      method: "POST",
-      timeout: 15000,
-      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
-    }, (res) => {
-      const chunks = [];
-      res.on("data", (d) => chunks.push(d));
-      res.on("end", () => {
-        const json = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        if (json.ok) resolve(json.result);
-        else reject(new Error(`getFile erro: ${json.description}`));
-      });
-    });
-    req.on("error", reject);
-    req.write(body);
-    req.end();
-  });
-
-  const filePath = fileMetaJson.file_path;
-  return `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePath}`;
 }
 
 export const handler = async (event) => {
@@ -134,9 +119,9 @@ export const handler = async (event) => {
       return { statusCode: 400, headers, body: JSON.stringify({ error: "Campos obrigatórios ausentes" }) };
 
     const fileBuffer = Buffer.from(fileBase64, "base64");
-    console.log("Enviando para Telegram:", fileName, mimeType, fileBuffer.length, "bytes");
+    console.log("Enviando para R2:", fileName, mimeType, fileBuffer.length, "bytes");
 
-    const url = await uploadToTelegram(fileBuffer, fileName, mimeType);
+    const url = await uploadToR2(fileBuffer, fileName, mimeType);
     console.log("URL gerada:", url);
 
     return { statusCode: 200, headers, body: JSON.stringify({ url }) };
