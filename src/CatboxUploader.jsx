@@ -1,4 +1,6 @@
-// CatboxUploader.jsx — upload via proxy com suporte a arquivos grandes
+// CatboxUploader.jsx — upload DIRETO do browser para catbox.moe (sem proxy)
+// O proxy via Netlify Functions falha porque o Catbox bloqueia IPs de datacenter (ETIMEDOUT).
+// O Catbox aceita uploads diretos do browser via FormData com CORS habilitado.
 import { useState, useRef, useCallback } from "react";
 
 function formatSize(bytes) {
@@ -11,86 +13,42 @@ function isVideo(name) {
   return ["mp4", "mov", "avi", "mkv", "webm"].includes(name.split(".").pop().toLowerCase());
 }
 
-// Lê arquivo como base64 com callback de progresso
-function readAsBase64(file, onProgress) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onprogress = (e) => {
-      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 40)); // 0-40%
-    };
-    reader.onload  = () => resolve(reader.result.split(",")[1]);
-    reader.onerror = () => reject(new Error("Falha ao ler arquivo"));
-    reader.readAsDataURL(file);
-  });
-}
-
-// Limite do Netlify Functions é 6MB de body
-// Base64 aumenta tamanho em ~33%, então limite real do arquivo é ~4MB
-// Para arquivos maiores, envia em chunks de 3MB
-const CHUNK_SIZE_BYTES = 3 * 1024 * 1024; // 3MB por chunk (em bytes originais)
-
+// Upload direto do browser para catbox.moe via FormData
 async function uploadToCatbox(file, onProgress) {
-  onProgress(5);
+  onProgress(10);
 
-  // Arquivos pequenos: envia direto em uma chamada
-  if (file.size <= CHUNK_SIZE_BYTES) {
-    const fileBase64 = await readAsBase64(file, onProgress);
-    onProgress(50);
+  const formData = new FormData();
+  formData.append("reqtype", "fileupload");
+  formData.append("fileToUpload", file, file.name);
 
-    const res  = await fetch("/api/catbox-proxy", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fileBase64, fileName: file.name, mimeType: file.type || "application/octet-stream" }),
-    });
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
 
-    onProgress(90);
-    const data = await res.json();
-    if (!res.ok || !data.url) throw new Error(data.error || `Erro ${res.status}`);
-    onProgress(100);
-    return data.url;
-  }
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = Math.round((e.loaded / e.total) * 80) + 10; // 10–90%
+        onProgress(pct);
+      }
+    };
 
-  // Arquivos grandes: lê o arquivo inteiro e envia em chunks base64
-  // O servidor remonta e faz 1 upload para o Catbox
-  const fileBase64 = await readAsBase64(file, onProgress); // 0-40%
-  onProgress(45);
+    xhr.onload = () => {
+      onProgress(95);
+      const text = xhr.responseText?.trim();
+      if (xhr.status === 200 && text?.startsWith("https://")) {
+        onProgress(100);
+        resolve(text);
+      } else {
+        reject(new Error(`Catbox erro ${xhr.status}: ${text || "resposta vazia"}`));
+      }
+    };
 
-  // Divide a string base64 em partes de ~4MB cada
-  const chunkSize  = Math.floor(CHUNK_SIZE_BYTES * 1.37); // bytes base64 equivalentes
-  const totalChunks = Math.ceil(fileBase64.length / chunkSize);
-  const uploadId   = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    xhr.onerror = () => reject(new Error("Erro de rede ao conectar com Catbox"));
+    xhr.ontimeout = () => reject(new Error("Timeout ao conectar com Catbox (60s)"));
+    xhr.timeout = 60000;
 
-  for (let i = 0; i < totalChunks; i++) {
-    const chunk = fileBase64.slice(i * chunkSize, (i + 1) * chunkSize);
-    const isLast = i === totalChunks - 1;
-
-    const res = await fetch("/api/catbox-proxy", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fileBase64: chunk,
-        fileName:   file.name,
-        mimeType:   file.type || "application/octet-stream",
-        uploadId,
-        chunkIndex:  i,
-        totalChunks,
-        isLastChunk: isLast,
-      }),
-    });
-
-    const progress = 45 + Math.round(((i + 1) / totalChunks) * 50);
-    onProgress(Math.min(progress, 95));
-
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `Erro no chunk ${i}: ${res.status}`);
-    if (isLast) {
-      if (!data.url) throw new Error(data.error || "URL não retornada");
-      onProgress(100);
-      return data.url;
-    }
-  }
-
-  throw new Error("Upload incompleto");
+    xhr.open("POST", "https://catbox.moe/user/api.php");
+    xhr.send(formData);
+  });
 }
 
 export default function CatboxUploader({ onUrlsReady }) {
@@ -149,8 +107,8 @@ export default function CatboxUploader({ onUrlsReady }) {
   };
 
   const getProgressLabel = (f) => {
-    if (f.progress < 45) return "Lendo arquivo...";
-    if (f.progress < 95) return `Enviando... ${f.progress}%`;
+    if (f.progress < 20) return "Iniciando...";
+    if (f.progress < 90) return `Enviando... ${f.progress}%`;
     return "Finalizando...";
   };
 
