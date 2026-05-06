@@ -21,9 +21,11 @@ function randomBetween(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// Hook de fila IndexedDB + SW
+// Hook de fila IndexedDB — tick local SEMPRE ativo, SW é bônus
 function useScheduler(addEntry) {
   const [queue, setQueue] = useState([]);
+  const runningRef = { current: new Set() };
+
   const reload = useCallback(async () => {
     const all = await dbGetAll("queue");
     all.sort((a, b) => a.scheduledAt - b.scheduledAt);
@@ -37,31 +39,51 @@ function useScheduler(addEntry) {
     return () => window.removeEventListener("sw:queue-update", h);
   }, []);
 
-  // Fallback tick local se SW indisponível
+  // Tick local — roda SEMPRE a cada 10s, independente do SW
   useEffect(() => {
     const tick = async () => {
-      const swActive = navigator.serviceWorker?.controller != null;
-      if (swActive) return;
       const all = await dbGetAll("queue");
       const now = Date.now();
       const due = all.filter((x) => x.scheduledAt <= now && x.status === "pending");
       if (!due.length) return;
 
       for (const item of due) {
+        if (runningRef.current.has(item.id)) continue;
+        runningRef.current.add(item.id);
+
         await dbPut("queue", { ...item, status: "running" });
         reload();
+
         try {
           const res = await fetch("/.netlify/functions/publish", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              accounts: item.accounts, media_url: item.mediaUrl, media_type: item.mediaType,
-              post_type: item.postType, captions: item.captions || {}, default_caption: item.caption || "", delay_seconds: 0,
+              accounts: item.accounts,
+              media_url: item.mediaUrl,
+              media_type: item.mediaType,
+              post_type: item.postType,
+              captions: item.captions || {},
+              default_caption: item.caption || "",
+              delay_seconds: 0,
             }),
           });
+
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
           const results = data.results || [];
-          await addEntry({ id: Date.now(), post_type: item.postType, media_url: item.mediaUrl, media_type: item.mediaType, default_caption: item.caption, results, created_at: new Date().toISOString(), from_scheduler: true });
+
+          await addEntry({
+            id: Date.now(),
+            post_type: item.postType,
+            media_url: item.mediaUrl,
+            media_type: item.mediaType,
+            default_caption: item.caption,
+            results,
+            created_at: new Date().toISOString(),
+            from_scheduler: true,
+          });
+
           if (item.loop) {
             await dbPut("queue", { ...item, status: "pending", scheduledAt: item.scheduledAt + 86400000, runCount: (item.runCount || 0) + 1 });
           } else {
@@ -70,13 +92,16 @@ function useScheduler(addEntry) {
         } catch (err) {
           await dbPut("queue", { ...item, status: "error", error: err.message });
         }
+
+        runningRef.current.delete(item.id);
+        reload();
       }
-      reload();
     };
-    const iv = setInterval(tick, 15000);
+
+    const iv = setInterval(tick, 10000);
     tick();
     return () => clearInterval(iv);
-  }, []);
+  }, [addEntry]);
 
   const addBatch   = async (b) => { await dbPutMany("queue", b); reload(); };
   const removeItem = async (id) => { await dbDelete("queue", id); setQueue((p) => p.filter((x) => x.id !== id)); };
