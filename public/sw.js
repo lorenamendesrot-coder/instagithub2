@@ -90,7 +90,7 @@ async function runItem(item) {
 
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open("insta_manager", 3);
+    const req = indexedDB.open("insta_manager", 4); // ✅ mantido em sincronia com useDB.js
     req.onupgradeneeded = (e) => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains("queue")) db.createObjectStore("queue", { keyPath: "id" });
