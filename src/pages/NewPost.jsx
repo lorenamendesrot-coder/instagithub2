@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useAccounts, useHistory } from "../App.jsx";
 import MediaPreview from "../MediaPreview.jsx";
+import CatboxUploader from "../CatboxUploader.jsx";
 import Modal from "../Modal.jsx";
 
 const POST_TYPES = [
@@ -26,6 +27,22 @@ export default function NewPost() {
   const [progress, setProgress]             = useState(null);
   const [toast, setToast]                   = useState(null);
   const [confirmPublish, setConfirmPublish] = useState(false);
+  const [showUploader, setShowUploader] = useState(false);
+
+  const isReel = postType === "REEL";
+
+  const handlePostType = (t) => {
+    setPostType(t);
+    if (t === "REEL") setMediaType("VIDEO");
+  };
+
+  const handleCatboxUrl = (items) => {
+    if (items.length > 0) {
+      setMediaUrl(items[0].url);
+      setMediaType(items[0].type);
+    }
+    setShowUploader(false);
+  };
 
   const showCaptions = postType === "FEED" || postType === "REEL";
   const selectedAccounts = accounts.filter((a) => selectedIds.includes(a.id));
@@ -152,7 +169,7 @@ export default function NewPost() {
             <div className="card">
               <div style={{ display: "flex", gap: 8 }}>
                 {POST_TYPES.map((t) => (
-                  <button key={t.value} onClick={() => setPostType(t.value)} style={{
+                  <button key={t.value} onClick={() => handlePostType(t.value)} style={{
                     flex: 1, padding: "11px 8px", borderRadius: 8, border: "1px solid",
                     borderColor: postType === t.value ? "var(--accent)" : "var(--border)",
                     background: postType === t.value ? "#7c5cfc18" : "var(--bg3)",
@@ -169,7 +186,15 @@ export default function NewPost() {
             {/* Mídia + Preview com validação */}
             <div className="card">
               <div className="form-row">
-                <label>URL da mídia (Catbox, Cloudinary, S3, etc.)</label>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <label style={{ margin: 0 }}>URL da mídia</label>
+                  <button className={`btn btn-sm ${showUploader ? "btn-primary" : "btn-ghost"}`} onClick={() => setShowUploader(p => !p)}>☁️ Upload Catbox</button>
+                </div>
+                {showUploader && (
+                  <div style={{ marginBottom: 14, padding: 14, background: "var(--bg3)", borderRadius: 10, border: "1px solid var(--border)" }}>
+                    <CatboxUploader onUrlsReady={handleCatboxUrl} mediaType={mediaType} />
+                  </div>
+                )}
                 <input
                   type="url"
                   placeholder="https://files.catbox.moe/xxxxxx.jpg"

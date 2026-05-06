@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useAccounts, useHistory } from "../App.jsx";
 import MediaPreview from "../MediaPreview.jsx";
 import Modal from "../Modal.jsx";
+import CatboxUploader from "../CatboxUploader.jsx";
 import { dbGetAll, dbPut, dbPutMany, dbDelete, dbClear } from "../useDB.js";
 
 const POST_TYPES = [
@@ -10,31 +11,37 @@ const POST_TYPES = [
   { value: "STORY", label: "Story", desc: "24 horas",      icon: "⭕" },
 ];
 
-// Data atual + N minutos, formato datetime-local, preservando fuso horário local
+// Data atual + N minutos, no fuso local
 function nowPlus(minutes = 1) {
   const d = new Date(Date.now() + minutes * 60000);
   d.setSeconds(0, 0);
-  // Usa offset local para garantir que o datetime-local seja no fuso do usuário
   const offset = d.getTimezoneOffset() * 60000;
   const local  = new Date(d.getTime() - offset);
   return local.toISOString().slice(0, 16);
 }
 
-// Converte datetime-local para timestamp UTC correto (respeita fuso)
 function localToTimestamp(localStr) {
-  // new Date(localStr) interpreta sem fuso — precisamos adicionar o offset
-  const d = new Date(localStr);
-  return d.getTime();
+  return new Date(localStr).getTime();
 }
 
 function randomBetween(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// Hook do scheduler — runningRef CORRETO com useRef
+// Embaralha array (Fisher-Yates)
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// Hook do scheduler
 function useScheduler(addEntry) {
   const [queue, setQueue] = useState([]);
-  const runningRef = useRef(new Set()); // FIX: useRef em vez de objeto simples
+  const runningRef = useRef(new Set());
 
   const reload = useCallback(async () => {
     const all = await dbGetAll("queue");
@@ -49,7 +56,6 @@ function useScheduler(addEntry) {
     return () => window.removeEventListener("sw:queue-update", h);
   }, []);
 
-  // Tick local — roda sempre a cada 10s
   useEffect(() => {
     const tick = async () => {
       const all = await dbGetAll("queue");
@@ -60,7 +66,6 @@ function useScheduler(addEntry) {
       for (const item of due) {
         if (runningRef.current.has(item.id)) continue;
         runningRef.current.add(item.id);
-
         await dbPut("queue", { ...item, status: "running" });
         reload();
 
@@ -120,83 +125,221 @@ function useScheduler(addEntry) {
   return { queue, addBatch, updateItem, removeItem, clearQueue, reload };
 }
 
+// Componente de seleção de contas
+function AccountPicker({ accounts, selectedIds, onToggle, onSelectAll, onClear }) {
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+          Contas <span style={{ color: "var(--text)" }}>({selectedIds.length}/{accounts.length})</span>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button className="btn btn-ghost btn-xs" onClick={onSelectAll}>Todas</button>
+          <button className="btn btn-ghost btn-xs" onClick={onClear}>Limpar</button>
+        </div>
+      </div>
+      {accounts.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "14px 0", color: "var(--muted)", fontSize: 12 }}>Nenhuma conta conectada</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          {accounts.map((acc) => {
+            const sel = selectedIds.includes(acc.id);
+            return (
+              <button key={acc.id} onClick={() => onToggle(acc.id)} style={{
+                display: "flex", alignItems: "center", gap: 9, padding: "8px 10px", borderRadius: 8,
+                border: `1px solid ${sel ? "var(--accent)" : "var(--border)"}`,
+                background: sel ? "#7c5cfc12" : "var(--bg3)", textAlign: "left", width: "100%", transition: "all 0.12s",
+              }}>
+                {acc.profile_picture
+                  ? <img src={acc.profile_picture} alt="" style={{ width: 26, height: 26, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+                  : <div style={{ width: 26, height: 26, borderRadius: "50%", background: "linear-gradient(135deg, var(--accent), #9b4dfc)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#fff" }}>
+                      {(acc.username || "?")[0].toUpperCase()}
+                    </div>}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: sel ? "var(--accent-light)" : "var(--text)" }}>
+                    @{acc.username}
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--muted)" }}>{acc.account_type}</div>
+                </div>
+                <div style={{ width: 15, height: 15, borderRadius: "50%", border: `1.5px solid ${sel ? "var(--accent)" : "var(--border)"}`, background: sel ? "var(--accent)" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all 0.15s" }}>
+                  {sel && <span style={{ color: "#fff", fontSize: 9 }}>✓</span>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Schedule() {
   const { accounts } = useAccounts();
   const { addEntry }  = useHistory();
   const { queue, addBatch, updateItem, removeItem, clearQueue } = useScheduler(addEntry);
 
+  // Form
   const [postType,    setPostType]    = useState("FEED");
   const [mediaType,   setMediaType]   = useState("IMAGE");
   const [caption,     setCaption]     = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
-  const [urlList,     setUrlList]     = useState([{ id: 1, url: "" }]);
+  const [urlList,     setUrlList]     = useState([{ id: 1, url: "", type: "IMAGE" }]);
   const [previewIdx,  setPreviewIdx]  = useState(0);
   const [startTime,   setStartTime]   = useState(nowPlus(1));
-  const [intervalMin, setIntervalMin] = useState(0.5);
-  const [intervalMax, setIntervalMax] = useState(1);
+  const [intervalMin, setIntervalMin] = useState(0);   // em minutos, padrão 0
+  const [intervalMax, setIntervalMax] = useState(20);  // em minutos, padrão 20
   const [loop,        setLoop]        = useState(false);
 
-  // Modal de edição
-  const [editModal,  setEditModal]   = useState(null); // item da fila sendo editado
-  const [editTime,   setEditTime]    = useState("");
-  const [editCaption,setEditCaption] = useState("");
+  // Modo de distribuição
+  const [distMode, setDistMode] = useState("all");
+  // all = todas as contas recebem cada URL
+  // random = cada conta recebe uma URL aleatória do pool
+  // roundrobin = distribui em sequência
 
-  // Modal de confirmação
+  // Upload Catbox
+  const [showUploader, setShowUploader] = useState(false);
+
+  // Modais
+  const [editModal,    setEditModal]    = useState(null);
+  const [editTime,     setEditTime]     = useState("");
+  const [editCaption,  setEditCaption]  = useState("");
   const [confirmModal, setConfirmModal] = useState(null);
+
+  const isReel = postType === "REEL";
+
+  const handlePostType = (t) => {
+    setPostType(t);
+    if (t === "REEL") setMediaType("VIDEO");
+  };
 
   const toggleAcc = (id) => setSelectedIds((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
   const selectAll = () => setSelectedIds(accounts.map((a) => a.id));
   const clearAll  = () => setSelectedIds([]);
 
-  const addUrl    = () => setUrlList((p) => [...p, { id: Date.now(), url: "" }]);
+  const addUrl    = () => setUrlList((p) => [...p, { id: Date.now(), url: "", type: isReel ? "VIDEO" : mediaType }]);
   const removeUrl = (id) => setUrlList((p) => p.filter((x) => x.id !== id));
   const setUrl    = (id, v) => setUrlList((p) => p.map((x) => x.id === id ? { ...x, url: v } : x));
 
   const selectedAccounts = accounts.filter((a) => selectedIds.includes(a.id));
   const activeUrl = urlList[previewIdx]?.url || "";
-  const validUrls = urlList.map((x) => x.url.trim()).filter(Boolean);
+  const validUrls = urlList.filter((x) => x.url.trim());
 
   useEffect(() => { setStartTime(nowPlus(1)); }, []);
 
+  // Recebe URLs do CatboxUploader
+  const handleCatboxUrls = (items) => {
+    const newEntries = items.map((item, i) => ({
+      id: Date.now() + i,
+      url: item.url,
+      type: item.type,
+    }));
+    setUrlList((p) => {
+      // Remove entradas vazias e adiciona as novas
+      const nonEmpty = p.filter((x) => x.url.trim());
+      return nonEmpty.length === 0 ? newEntries : [...nonEmpty, ...newEntries];
+    });
+    // Atualiza mediaType para o tipo mais comum entre os uploads
+    const hasVideo = newEntries.some((e) => e.type === "VIDEO");
+    if (hasVideo && !isReel) setMediaType("VIDEO");
+    else if (!hasVideo && !isReel) setMediaType("IMAGE");
+    setShowUploader(false);
+  };
+
+  // Gera os itens da fila conforme o modo de distribuição
+  const buildQueueItems = (startTs) => {
+    const urls = validUrls.map((x) => x.url.trim());
+    const items = [];
+    let ts = startTs;
+
+    if (distMode === "all") {
+      // Cada URL → todas as contas, com intervalo entre URLs
+      for (let u = 0; u < urls.length; u++) {
+        if (u > 0) {
+          const delayMs = randomBetween(
+            Math.round(intervalMin * 60000),
+            Math.max(Math.round(intervalMax * 60000), Math.round(intervalMin * 60000) + 1000)
+          );
+          ts += delayMs;
+        }
+        items.push({
+          id: `${Date.now()}-${u}-${Math.random().toString(36).slice(2)}`,
+          postType, mediaType, mediaUrl: urls[u],
+          caption, accounts: selectedAccounts,
+          scheduledAt: ts, status: "pending",
+          loop, runCount: 0, distMode: "all",
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    } else if (distMode === "random") {
+      // Pool de URLs embaralhado — cada conta recebe uma URL aleatória do pool
+      // Uma entrada por conta, com URL sorteada
+      const shuffledUrls = shuffle(urls);
+      const shuffledAccs = shuffle(selectedAccounts);
+
+      for (let i = 0; i < shuffledAccs.length; i++) {
+        if (i > 0) {
+          const delayMs = randomBetween(
+            Math.round(intervalMin * 60000),
+            Math.max(Math.round(intervalMax * 60000), Math.round(intervalMin * 60000) + 1000)
+          );
+          ts += delayMs;
+        }
+        const url = shuffledUrls[i % shuffledUrls.length]; // circula se há mais contas do que URLs
+        items.push({
+          id: `${Date.now()}-${i}-${Math.random().toString(36).slice(2)}`,
+          postType, mediaType, mediaUrl: url,
+          caption, accounts: [shuffledAccs[i]],
+          scheduledAt: ts, status: "pending",
+          loop, runCount: 0, distMode: "random",
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    } else if (distMode === "roundrobin") {
+      // Round-robin: distribui URLs sequencialmente entre as contas
+      // Cada URL → uma conta diferente em sequência
+      for (let u = 0; u < urls.length; u++) {
+        if (u > 0) {
+          const delayMs = randomBetween(
+            Math.round(intervalMin * 60000),
+            Math.max(Math.round(intervalMax * 60000), Math.round(intervalMin * 60000) + 1000)
+          );
+          ts += delayMs;
+        }
+        const acc = selectedAccounts[u % selectedAccounts.length];
+        items.push({
+          id: `${Date.now()}-${u}-${Math.random().toString(36).slice(2)}`,
+          postType, mediaType, mediaUrl: urls[u],
+          caption, accounts: [acc],
+          scheduledAt: ts, status: "pending",
+          loop, runCount: 0, distMode: "roundrobin",
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    }
+
+    return items;
+  };
+
   const schedule = async () => {
-    if (!validUrls.length)    return alert("Adicione ao menos uma URL de mídia");
-    if (!selectedIds.length)  return alert("Selecione ao menos uma conta");
-    if (!startTime)           return alert("Defina o horário de início");
+    if (!validUrls.length)   return alert("Adicione ao menos uma URL de mídia");
+    if (!selectedIds.length) return alert("Selecione ao menos uma conta");
+    if (!startTime)          return alert("Defina o horário de início");
 
     const startTs = localToTimestamp(startTime);
     if (startTs <= Date.now()) return alert("O horário precisa ser no futuro");
 
-    const items = [];
-    let ts = startTs;
-
-    for (let u = 0; u < validUrls.length; u++) {
-      if (u > 0) {
-        const delayMin = Math.round(intervalMin * 60000);
-        const delayMax = Math.round(intervalMax * 60000);
-        ts += randomBetween(delayMin, delayMax);
-      }
-      items.push({
-        id: Date.now() + u,
-        postType, mediaType, mediaUrl: validUrls[u],
-        caption, accounts: selectedAccounts,
-        scheduledAt: ts,
-        status: "pending",
-        loop,
-        runCount: 0,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, // salva fuso
-        createdAt: new Date().toISOString(),
-      });
-    }
-
+    const items = buildQueueItems(startTs);
     await addBatch(items);
-    setUrlList([{ id: 1, url: "" }]);
+    setUrlList([{ id: 1, url: "", type: isReel ? "VIDEO" : mediaType }]);
     setCaption("");
     setSelectedIds([]);
   };
 
   const openEdit = (item) => {
     setEditModal(item);
-    // Converter timestamp de volta para datetime-local
     const d = new Date(item.scheduledAt);
     const offset = d.getTimezoneOffset() * 60000;
     const local = new Date(d.getTime() - offset);
@@ -212,15 +355,25 @@ export default function Schedule() {
   };
 
   const STATUS_INFO = {
-    pending: { label: "Agendado", color: "var(--info)",    bg: "rgba(56,189,248,0.1)"  },
-    running: { label: "Rodando",  color: "var(--warning)", bg: "rgba(245,158,11,0.1)"  },
-    done:    { label: "Feito",    color: "var(--success)", bg: "rgba(34,197,94,0.08)"   },
-    error:   { label: "Erro",     color: "var(--danger)",  bg: "rgba(239,68,68,0.08)"  },
+    pending: { label: "Agendado", color: "var(--info)",    bg: "rgba(56,189,248,0.08)"  },
+    running: { label: "Rodando",  color: "var(--warning)", bg: "rgba(245,158,11,0.08)"  },
+    done:    { label: "Feito",    color: "var(--success)", bg: "rgba(34,197,94,0.06)"   },
+    error:   { label: "Erro",     color: "var(--danger)",  bg: "rgba(239,68,68,0.06)"   },
   };
 
   const pendingCount = queue.filter((q) => q.status === "pending").length;
   const doneCount    = queue.filter((q) => q.status === "done").length;
   const errorCount   = queue.filter((q) => q.status === "error").length;
+
+  // Preview da distribuição
+  const previewDist = () => {
+    const urls = validUrls.map((x) => x.url.trim());
+    if (!urls.length || !selectedAccounts.length) return [];
+    if (distMode === "all") return [`${urls.length} URL(s) → ${selectedAccounts.length} conta(s) cada`];
+    if (distMode === "random") return selectedAccounts.map((acc, i) => `@${acc.username} → URL sorteada aleatoriamente`);
+    if (distMode === "roundrobin") return urls.map((url, i) => `URL ${i+1} → @${selectedAccounts[i % selectedAccounts.length]?.username}`);
+    return [];
+  };
 
   return (
     <div className="page">
@@ -228,7 +381,8 @@ export default function Schedule() {
         <div>
           <div className="page-title">Agendamentos</div>
           <div className="page-subtitle">
-            {pendingCount} pendente(s) · {doneCount} feito(s) · {errorCount > 0 && <span style={{ color: "var(--danger)" }}>{errorCount} erro(s)</span>}
+            {pendingCount} pendente(s) · {doneCount} feito(s)
+            {errorCount > 0 && <span style={{ color: "var(--danger)", marginLeft: 6 }}>· {errorCount} erro(s)</span>}
           </div>
         </div>
         {queue.length > 0 && (
@@ -248,7 +402,7 @@ export default function Schedule() {
             <div style={{ marginBottom: 12, fontSize: 12, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Tipo de post</div>
             <div style={{ display: "flex", gap: 8 }}>
               {POST_TYPES.map((t) => (
-                <button key={t.value} onClick={() => setPostType(t.value)} style={{
+                <button key={t.value} onClick={() => handlePostType(t.value)} style={{
                   flex: 1, padding: "10px 6px", borderRadius: 8, border: "1px solid",
                   borderColor: postType === t.value ? "var(--accent)" : "var(--border)",
                   background: postType === t.value ? "#7c5cfc18" : "var(--bg3)",
@@ -256,23 +410,52 @@ export default function Schedule() {
                   textAlign: "center", transition: "all 0.12s",
                 }}>
                   <div style={{ fontSize: 16 }}>{t.icon}</div>
-                  <div style={{ fontWeight: 500, fontSize: 12 }}>{t.label}</div>
+                  <div style={{ fontWeight: 600, fontSize: 12 }}>{t.label}</div>
+                  <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>{t.desc}</div>
                 </button>
               ))}
             </div>
+            {isReel && (
+              <div style={{ marginTop: 10, fontSize: 11, color: "var(--warning)", background: "rgba(245,158,11,0.08)", padding: "7px 10px", borderRadius: 7 }}>
+                ⚠️ Reels só aceita vídeo via API do Instagram
+              </div>
+            )}
           </div>
 
-          {/* URLs */}
+          {/* Upload Catbox + URLs */}
           <div className="card">
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>URLs de mídia</div>
-              <button className="btn btn-ghost btn-xs" onClick={addUrl}>+ Adicionar</button>
+              <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                Mídias ({validUrls.length})
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button
+                  className={`btn btn-sm ${showUploader ? "btn-primary" : "btn-ghost"}`}
+                  onClick={() => setShowUploader((p) => !p)}
+                >
+                  ☁️ Upload Catbox
+                </button>
+                <button className="btn btn-ghost btn-xs" onClick={addUrl}>+ URL manual</button>
+              </div>
             </div>
+
+            {/* Uploader Catbox */}
+            {showUploader && (
+              <div style={{ marginBottom: 14, padding: "14px", background: "var(--bg3)", borderRadius: 10, border: "1px solid var(--border)" }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 10, color: "var(--accent-light)" }}>
+                  ☁️ Upload direto para Catbox — URLs geradas automaticamente
+                </div>
+                <CatboxUploader onUrlsReady={handleCatboxUrls} mediaType={mediaType} />
+              </div>
+            )}
+
+            {/* Lista de URLs */}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {urlList.map((item, idx) => (
                 <div key={item.id}>
                   <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-                    <span style={{ fontSize: 11, color: "var(--muted)", minWidth: 18, textAlign: "right" }}>{idx + 1}.</span>
+                    <span style={{ fontSize: 11, color: "var(--muted)", minWidth: 20, textAlign: "right", fontWeight: 600 }}>{idx + 1}.</span>
+                    <span style={{ fontSize: 14, flexShrink: 0 }}>{item.type === "VIDEO" ? "🎬" : "🖼"}</span>
                     <input
                       type="url"
                       placeholder="https://files.catbox.moe/..."
@@ -288,24 +471,73 @@ export default function Schedule() {
                 </div>
               ))}
             </div>
+
+            {/* Preview da URL ativa */}
             {activeUrl && (
               <div style={{ marginTop: 12 }}>
-                <MediaPreview url={activeUrl} mediaType={mediaType} onTypeDetected={setMediaType} />
+                <MediaPreview url={activeUrl} mediaType={isReel ? "VIDEO" : mediaType} onTypeDetected={!isReel ? setMediaType : undefined} />
               </div>
             )}
-            <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-              {["IMAGE", "VIDEO"].map((t) => (
-                <button key={t} onClick={() => setMediaType(t)} style={{
-                  flex: 1, padding: "7px", borderRadius: 8, border: "1px solid",
-                  borderColor: mediaType === t ? "var(--accent)" : "var(--border)",
-                  background: mediaType === t ? "#7c5cfc18" : "var(--bg3)",
-                  color: mediaType === t ? "var(--accent-light)" : "var(--muted)",
-                  fontSize: 12, fontWeight: mediaType === t ? 500 : 400,
+
+            {/* Tipo de mídia (desativado para Reel) */}
+            {!isReel && (
+              <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                {["IMAGE", "VIDEO"].map((t) => (
+                  <button key={t} onClick={() => setMediaType(t)} style={{
+                    flex: 1, padding: "7px", borderRadius: 8, border: "1px solid",
+                    borderColor: mediaType === t ? "var(--accent)" : "var(--border)",
+                    background: mediaType === t ? "#7c5cfc18" : "var(--bg3)",
+                    color: mediaType === t ? "var(--accent-light)" : "var(--muted)",
+                    fontSize: 12, fontWeight: mediaType === t ? 600 : 400,
+                  }}>
+                    {t === "IMAGE" ? "🖼 Imagem" : "🎬 Vídeo"}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Modo de distribuição */}
+          <div className="card">
+            <div style={{ marginBottom: 12, fontSize: 12, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              🎲 Distribuição entre contas
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {[
+                { value: "all",        icon: "📢", label: "Todas recebem tudo",    desc: "Cada URL é postada em todas as contas selecionadas" },
+                { value: "random",     icon: "🎲", label: "Aleatório",             desc: "Cada conta recebe uma URL sorteada aleatoriamente do pool" },
+                { value: "roundrobin", icon: "🔄", label: "Round-robin",           desc: "Distribui URLs em sequência entre as contas" },
+              ].map((opt) => (
+                <button key={opt.value} onClick={() => setDistMode(opt.value)} style={{
+                  display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", borderRadius: 8, border: "1px solid",
+                  borderColor: distMode === opt.value ? "var(--accent)" : "var(--border)",
+                  background: distMode === opt.value ? "#7c5cfc12" : "var(--bg3)",
+                  textAlign: "left", width: "100%", transition: "all 0.12s",
                 }}>
-                  {t === "IMAGE" ? "🖼 Imagem" : "🎬 Vídeo"}
+                  <span style={{ fontSize: 18, flexShrink: 0 }}>{opt.icon}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: distMode === opt.value ? "var(--accent-light)" : "var(--text)" }}>{opt.label}</div>
+                    <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{opt.desc}</div>
+                  </div>
+                  <div style={{ width: 15, height: 15, borderRadius: "50%", border: `1.5px solid ${distMode === opt.value ? "var(--accent)" : "var(--border)"}`, background: distMode === opt.value ? "var(--accent)" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 2 }}>
+                    {distMode === opt.value && <span style={{ color: "#fff", fontSize: 9 }}>✓</span>}
+                  </div>
                 </button>
               ))}
             </div>
+
+            {/* Preview da distribuição */}
+            {validUrls.length > 0 && selectedAccounts.length > 0 && (
+              <div style={{ marginTop: 12, background: "var(--bg3)", borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600, marginBottom: 6 }}>PRÉVIA</div>
+                {previewDist().slice(0, 5).map((line, i) => (
+                  <div key={i} style={{ fontSize: 11, color: "var(--text)", marginBottom: 3 }}>→ {line}</div>
+                ))}
+                {previewDist().length > 5 && (
+                  <div style={{ fontSize: 11, color: "var(--muted)" }}>... e mais {previewDist().length - 5}</div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Legenda */}
@@ -330,31 +562,38 @@ export default function Schedule() {
               <label>Início do agendamento</label>
               <input type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
               <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
-                Fuso local: {Intl.DateTimeFormat().resolvedOptions().timeZone}
+                Fuso: {Intl.DateTimeFormat().resolvedOptions().timeZone}
               </div>
             </div>
 
-            {urlList.length > 1 && (
-              <div className="form-row" style={{ marginBottom: 0 }}>
-                <label>Intervalo entre URLs (minutos)</label>
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  <input type="number" min="0.1" max="1440" step="0.1" value={intervalMin}
-                    onChange={(e) => setIntervalMin(parseFloat(e.target.value) || 0.5)}
-                    style={{ maxWidth: 90, fontSize: 13 }} />
-                  <span style={{ color: "var(--muted)", fontSize: 12 }}>até</span>
-                  <input type="number" min="0.1" max="1440" step="0.1" value={intervalMax}
-                    onChange={(e) => setIntervalMax(parseFloat(e.target.value) || 1)}
-                    style={{ maxWidth: 90, fontSize: 13 }} />
-                  <span style={{ fontSize: 11, color: "var(--muted)" }}>min</span>
-                </div>
+            <div className="form-row" style={{ marginBottom: 0 }}>
+              <label>Intervalo entre posts (minutos)</label>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <input
+                  type="number" min="0" max="1440" step="1" value={intervalMin}
+                  onChange={(e) => setIntervalMin(Math.max(0, parseFloat(e.target.value) || 0))}
+                  style={{ maxWidth: 90, fontSize: 13 }}
+                />
+                <span style={{ color: "var(--muted)", fontSize: 12 }}>até</span>
+                <input
+                  type="number" min="0" max="1440" step="1" value={intervalMax}
+                  onChange={(e) => setIntervalMax(Math.max(0, parseFloat(e.target.value) || 0))}
+                  style={{ maxWidth: 90, fontSize: 13 }}
+                />
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>min</span>
               </div>
-            )}
+              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6, padding: "6px 10px", background: "var(--bg3)", borderRadius: 7 }}>
+                {intervalMin === 0 && intervalMax === 0
+                  ? "Sem intervalo — publica tudo em sequência imediata"
+                  : `Intervalo aleatório de ${intervalMin}~${intervalMax} min + segundos aleatórios`}
+              </div>
+            </div>
 
-            <div style={{ marginTop: 12 }}>
+            <div style={{ marginTop: 14 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                 <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} style={{ width: "auto" }} />
-                <span style={{ fontSize: 13, color: "var(--text2)", textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>
-                  Repetir diariamente (loop 24h)
+                <span style={{ fontSize: 13, color: "var(--text)", textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>
+                  🔁 Repetir diariamente (loop 24h)
                 </span>
               </label>
             </div>
@@ -362,46 +601,26 @@ export default function Schedule() {
 
           {/* Contas */}
           <div className="card">
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-              <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                Contas <span style={{ color: "var(--text2)" }}>({selectedIds.length}/{accounts.length})</span>
-              </div>
-              <div style={{ display: "flex", gap: 6 }}>
-                <button className="btn btn-ghost btn-xs" onClick={selectAll}>Todas</button>
-                <button className="btn btn-ghost btn-xs" onClick={clearAll}>Limpar</button>
-              </div>
-            </div>
-            {accounts.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "14px 0", color: "var(--muted)", fontSize: 12 }}>Nenhuma conta conectada</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                {accounts.map((acc) => {
-                  const sel = selectedIds.includes(acc.id);
-                  return (
-                    <button key={acc.id} onClick={() => toggleAcc(acc.id)} style={{
-                      display: "flex", alignItems: "center", gap: 9, padding: "8px 10px", borderRadius: 8, border: "1px solid",
-                      borderColor: sel ? "var(--accent)" : "var(--border)", background: sel ? "#7c5cfc12" : "var(--bg3)", textAlign: "left", width: "100%", transition: "all 0.12s",
-                    }}>
-                      {acc.profile_picture
-                        ? <img src={acc.profile_picture} alt="" style={{ width: 26, height: 26, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
-                        : <div style={{ width: 26, height: 26, borderRadius: "50%", background: "var(--bg2)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "var(--muted)" }}>
-                            {(acc.username || "?")[0].toUpperCase()}
-                          </div>}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 12, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: sel ? "var(--accent-light)" : "var(--text)" }}>@{acc.username}</div>
-                      </div>
-                      <div style={{ width: 15, height: 15, borderRadius: "50%", border: `1.5px solid ${sel ? "var(--accent)" : "var(--border)"}`, background: sel ? "var(--accent)" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                        {sel && <span style={{ color: "#fff", fontSize: 9 }}>✓</span>}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+            <AccountPicker
+              accounts={accounts}
+              selectedIds={selectedIds}
+              onToggle={toggleAcc}
+              onSelectAll={selectAll}
+              onClear={clearAll}
+            />
           </div>
 
-          <button className="btn btn-primary" onClick={schedule} disabled={!validUrls.length || !selectedIds.length}>
-            Agendar {validUrls.length > 1 ? `${validUrls.length} posts` : "post"}
+          <button
+            className="btn btn-primary"
+            onClick={schedule}
+            disabled={!validUrls.length || !selectedIds.length}
+            style={{ padding: "12px 24px", fontSize: 14 }}
+          >
+            🗓 Agendar {distMode === "all"
+              ? `${validUrls.length} post(s) em ${selectedIds.length} conta(s)`
+              : distMode === "random"
+              ? `${selectedIds.length} post(s) aleatórios`
+              : `${validUrls.length} post(s) round-robin`}
           </button>
         </div>
 
@@ -409,13 +628,13 @@ export default function Schedule() {
         <div>
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
             Fila de agendamentos
-            {pendingCount > 0 && <span className="badge badge-info">{pendingCount} pendente(s)</span>}
+            {pendingCount > 0 && <span className="badge badge-info">{pendingCount}</span>}
           </div>
 
           {queue.length === 0 ? (
             <div className="card" style={{ textAlign: "center", padding: "36px 20px", color: "var(--muted)" }}>
               <div style={{ fontSize: 30, marginBottom: 12 }}>◷</div>
-              <div style={{ fontWeight: 500, color: "var(--text2)", marginBottom: 6 }}>Fila vazia</div>
+              <div style={{ fontWeight: 500, color: "var(--text)", marginBottom: 6 }}>Fila vazia</div>
               <div style={{ fontSize: 12 }}>Agendamentos aparecem aqui em tempo real.</div>
             </div>
           ) : (
@@ -426,75 +645,65 @@ export default function Schedule() {
                 const isPast = item.scheduledAt < Date.now();
 
                 return (
-                  <div key={item.id} className={`queue-item ${item.status}`} style={{ background: info.bg, border: `1px solid ${info.color}30` }}>
+                  <div key={item.id} style={{ background: info.bg, border: `1px solid ${info.color}30`, borderRadius: 12, padding: "14px" }}>
                     <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6, flexWrap: "wrap" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 7, flexWrap: "wrap" }}>
                           <span style={{ fontSize: 11, fontWeight: 600, color: info.color, background: `${info.color}20`, padding: "2px 8px", borderRadius: 20 }}>
                             {item.status === "running" ? "⟳ " : ""}{info.label}
                           </span>
-                          <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                            {item.postType} · {item.mediaType}
-                          </span>
-                          {item.loop && <span className="badge badge-purple" style={{ fontSize: 10 }}>loop</span>}
+                          <span className="badge badge-gray" style={{ fontSize: 10 }}>{item.postType}</span>
+                          <span className="badge badge-gray" style={{ fontSize: 10 }}>{item.mediaType === "IMAGE" ? "🖼" : "🎬"}</span>
+                          {item.distMode && item.distMode !== "all" && (
+                            <span className="badge badge-purple" style={{ fontSize: 10 }}>
+                              {item.distMode === "random" ? "🎲 aleatório" : "🔄 round-robin"}
+                            </span>
+                          )}
+                          {item.loop && <span className="badge badge-purple" style={{ fontSize: 10 }}>🔁 loop</span>}
                           {item.runCount > 0 && <span style={{ fontSize: 10, color: "var(--muted)" }}>×{item.runCount}</span>}
                         </div>
 
-                        <div style={{ fontSize: 12, color: isPast && item.status === "pending" ? "var(--warning)" : "var(--text2)", marginBottom: 5 }}>
+                        <div style={{ fontSize: 12, color: isPast && item.status === "pending" ? "var(--warning)" : "var(--text)", marginBottom: 5 }}>
                           🕐 {scheduledDate.toLocaleString("pt-BR")}
                           {isPast && item.status === "pending" && " (atrasado)"}
                         </div>
 
-                        {item.timezone && (
-                          <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4 }}>
-                            Fuso: {item.timezone}
-                          </div>
-                        )}
-
-                        <div style={{ fontSize: 11, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <div style={{ fontSize: 11, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 5 }}>
                           {item.mediaUrl}
                         </div>
 
                         {item.caption && (
-                          <div style={{ fontSize: 11, color: "var(--text2)", marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             "{item.caption}"
                           </div>
                         )}
 
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                           {(item.accounts || []).map((a) => (
-                            <span key={a.id} style={{ fontSize: 10, color: "var(--muted)", background: "var(--bg4)", padding: "2px 7px", borderRadius: 10 }}>
-                              @{a.username}
-                            </span>
+                            <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 5, background: "var(--bg4)", padding: "3px 8px", borderRadius: 10 }}>
+                              {a.profile_picture
+                                ? <img src={a.profile_picture} alt="" style={{ width: 14, height: 14, borderRadius: "50%", objectFit: "cover" }} />
+                                : <div style={{ width: 14, height: 14, borderRadius: "50%", background: "linear-gradient(135deg, var(--accent), #9b4dfc)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, color: "#fff", fontWeight: 700 }}>
+                                    {(a.username || "?")[0].toUpperCase()}
+                                  </div>}
+                              <span style={{ fontSize: 10, color: "var(--muted)" }}>@{a.username}</span>
+                            </div>
                           ))}
                         </div>
 
                         {item.error && (
-                          <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 5, padding: "3px 8px", background: "rgba(239,68,68,0.06)", borderRadius: 6 }}>
+                          <div style={{ fontSize: 11, color: "var(--danger)", marginTop: 6, padding: "4px 8px", background: "rgba(239,68,68,0.06)", borderRadius: 6 }}>
                             ✗ {item.error}
                           </div>
                         )}
                       </div>
 
-                      {/* Ações */}
                       <div style={{ display: "flex", flexDirection: "column", gap: 5, flexShrink: 0 }}>
                         {(item.status === "pending" || item.status === "error") && (
-                          <button
-                            className="btn btn-ghost btn-xs"
-                            onClick={() => openEdit(item)}
-                            title="Editar agendamento"
-                          >
-                            ✎
-                          </button>
+                          <button className="btn btn-ghost btn-xs" onClick={() => openEdit(item)} title="Editar">✎</button>
                         )}
-                        <button
-                          className="btn btn-ghost btn-xs"
-                          style={{ color: "var(--danger)" }}
-                          onClick={() => setConfirmModal({ type: "removeItem", id: item.id })}
-                          title="Remover da fila"
-                        >
-                          ✕
-                        </button>
+                        <button className="btn btn-ghost btn-xs" style={{ color: "var(--danger)" }}
+                          onClick={() => setConfirmModal({ type: "removeItem", id: item.id })} title="Remover">✕</button>
                       </div>
                     </div>
                   </div>
@@ -507,16 +716,12 @@ export default function Schedule() {
 
       {/* Modal de edição */}
       {editModal && (
-        <div
-          onClick={() => setEditModal(null)}
-          style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center" }}
-        >
-          <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--bg2)", border: "1px solid var(--border2)", borderRadius: 16, padding: "28px", width: "100%", maxWidth: 440, boxShadow: "0 24px 80px rgba(0,0,0,0.5)" }}>
+        <div onClick={() => setEditModal(null)} style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(6px)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--bg2)", border: "1px solid var(--border2)", borderRadius: 16, padding: 28, width: "100%", maxWidth: 440, boxShadow: "0 24px 80px rgba(0,0,0,0.5)" }}>
             <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 18 }}>✎ Editar agendamento</div>
             <div className="form-row">
               <label>Novo horário</label>
               <input type="datetime-local" value={editTime} onChange={(e) => setEditTime(e.target.value)} />
-              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>Fuso local: {Intl.DateTimeFormat().resolvedOptions().timeZone}</div>
             </div>
             <div className="form-row">
               <label>Legenda</label>
@@ -530,7 +735,6 @@ export default function Schedule() {
         </div>
       )}
 
-      {/* Modais de confirmação */}
       <Modal
         open={confirmModal?.type === "clearQueue"}
         title="Limpar fila?"
@@ -543,7 +747,7 @@ export default function Schedule() {
       <Modal
         open={confirmModal?.type === "removeItem"}
         title="Remover agendamento?"
-        message="Este item será removido da fila de agendamentos."
+        message="Este item será removido da fila."
         confirmLabel="Remover"
         confirmDanger
         onConfirm={() => { removeItem(confirmModal.id); setConfirmModal(null); }}
